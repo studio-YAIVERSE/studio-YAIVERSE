@@ -1,0 +1,108 @@
+## Introduction
+Text-guided 3D synthesis by GET3D + NADA
+
+
+
+
+
+## Requirements
+
+### Docker environment setup
+
+: use provided Dockerfile from official get3d repo
+
+### Environment setting
+: install CLIP for NADA
+```
+pip install ftfy regex tqdm 
+pip install git+https://github.com/openai/CLIP.git
+```
+
+### Git clone repo
+
+```
+git clone https://github.com/nv-tlabs/GET3D.git
+cd GET3D
+git clone https://github.com/studio-YAIVERSE/MVP-AI.git
+```
+
+You can just clone this repo into your own computer
+
+And finally the directory hierarchy is configured as,
+
+```
+GET3D_NADA
+├── experiments
+|	├── default_dist.yaml
+|	└── ....
+├── results
+| ├── default_dist
+|	  ├── checkpoint
+|	  ├── sample
+|	  └── default_dist_date.log
+| └── ....
+├── sample_img
+├── utils
+├── addon.py
+├── clip_loss.py
+├── clip_save.py
+├── dist_util.py
+├── model_engine.py
+├── nada.py
+└── train_nada_dist.py
+```
+
+## Train
+
+### Train code
+
+If you want to train the code, please refer to the training script below.
+
+```
+> python train_nada_dist.py --config_path='experiments/{}.yaml' --name='{}' --suppress
+
+optional arguments
+	--config_path             select yaml file to run (in experiments folder)
+	--name                    choose any name you want. Experiment results will be stored in this name
+	--suppress                store only latest & best pkl file
+
+EX)
+> python train_nada_dist.py --config_path='experiments/chair_burned_dist_abl_autok_20.yaml' --name='chair_burned_dist_abl_autok_20' --suppress
+```
+
+
+### Trainable Parameters
+
+When you open yaml file, you could see many trainable parameters and configs.
+
+Among them, below are some important parameters you could change as you conduct an experiment.
+
+<br>
+
+**Global Config**
+
+|  | Default Setting | Detailed explanation |
+| --- | --- | --- |
+| batch | 3 | Setting the batch number less than 3 resulted unfavorable results in most of the experiments. However, you could change this value to some other value that fits well to your experiments |
+| iter_1st | 1 | For most of the cases, 1 was enough to generate 3d object you want. You could increase this value to see more changes in the generated objects |
+| iter_2nd | 30 | For most of the cases, since model converges after iter_1st, 1 was enough to generate 3d object you want. You could increase this value to see more changes in the generated objects |
+
+<br>
+
+**GET3D config**
+
+|  | Default Setting | Detailed explanation |
+| --- | --- | --- |
+| n_views | 12 | You can change this value that fits your GPU memory. According to Paper, set n_views >= 16 |
+
+<br>
+
+**NADA config**
+
+|  | Default Setting | Detailed explanation |
+| --- | --- | --- |
+| lr | 0.002 | For most of the experiments lr 0.002 was suitable. However, you can change this value that fits your task. |
+| auto_layer_k | 20 , 30 | auto_layer_k means the number of trainable layers during adaptation of GET3D. We empirically found some following tips. For texture changes + slight shape changes, setting the auto_layer_k to 20 was suitable. For only texture changes, setting the auto_layer_k to 30 was suitable. |
+| source text | pretrained object | For most of the experiments, we simply set source text to pretrained object. However, we found out that giving some text prompt to this variable showed some improvements in some cases. EX) 3D object car |
+| target text | target object | For most of the experiments, we simply set target text to target object. However, we found out that giving some text prompt to this variable showed some improvements in some cases. EX) 3D render in the style of Pixar |
+| gradient_clip_threshold | -1 | For most of the experiments, not using gradient_clip(set as -1) was suitable. However, if the task requires some major changes in shape, using gradient clip was helpful.  |
