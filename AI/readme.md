@@ -1,9 +1,11 @@
 ## Introduction
 Text-guided 3D synthesis by GET3D + NADA
 
+예시 그림1
+예시 그림2
+예시 그림3
 
-
-
+<br>
 
 ## Requirements
 
@@ -51,6 +53,8 @@ GET3D_NADA
 ├── nada.py
 └── train_nada_dist.py
 ```
+
+<br>
 
 ## Train
 
