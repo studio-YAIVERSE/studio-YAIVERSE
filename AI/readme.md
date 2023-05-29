@@ -153,6 +153,7 @@ We provide some yaml files as examples.
 
 ### Appendix
 
+#### CLIP util
 we provide clip_save.py to avoid 'connection reset by peer' error from CLIP library, which accidentally stops the runtime.
 
 1. Do 'python clip_save.py', and then you can get clip-cnn.pt / clip-vit-b-16.pt / clip-vit-b-32.pt 
@@ -160,6 +161,25 @@ we provide clip_save.py to avoid 'connection reset by peer' error from CLIP libr
     - clip.load('RN50') &rarr; clip.load('/PATH/TO/clip-cnn.pt')
     - clip.load('ViT-B/16') &rarr; clip.load('/PATH/TO/clip-vit-b-16.pt')
     - clip.load('ViT-B/32') &rarr; clip.load('/PATH/TO/clip-vit-b-32.pt')
+
+#### Image to Video
+we provide image_to_video.py to convert image sequences into a video.
+
+We use this code for visualizing our result like Introduction section.
+
+
+---
+
+<br>
+
+Please note that this is not official code by GET3D authors.
+
+There may be differences in detail from the original.
+
+If you have any question for our team project, don't hesitate to leave an issue or email to minsu1206@yonsei.ac.kr
+
+Thanks.
+
 
 
 
