@@ -4,8 +4,8 @@ Text-guided 3D synthesis by GET3D + NADA
 | Car &rarr; Police Car | Car &rarr; Sketch |
 | --- | --- |
 |![car_policecar](https://github.com/studio-YAIVERSE/MVP-AI/assets/59243570/4266eb87-ab5d-4357-bf7e-27372c47489e) | ![car_sketch](https://github.com/studio-YAIVERSE/MVP-AI/assets/59243570/b495e84f-5e91-4ec3-9720-65aebc19fb27) |
-| Motorbike &rarr; Tiger | . |
-| ![motorbike_tiger](https://github.com/studio-YAIVERSE/MVP-AI/assets/59243570/7086c79f-2e2c-40cf-82e7-4fb96e5dd060) | . |
+| Motorbike &rarr; Tiger | Shoe &rarr; Mossy |
+| ![motorbike_tiger](https://github.com/studio-YAIVERSE/MVP-AI/assets/59243570/7086c79f-2e2c-40cf-82e7-4fb96e5dd060) | ![shoes_mossy](https://github.com/studio-YAIVERSE/MVP-AI/assets/59243570/01dfaca4-3d92-4deb-9e96-e036b59c16bc) |
 
 You can make any other interesting stylish 3D object!
 
