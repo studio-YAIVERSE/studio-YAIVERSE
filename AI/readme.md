@@ -24,7 +24,7 @@ pip install ftfy regex tqdm
 pip install git+https://github.com/openai/CLIP.git
 ```
 
-### Git clone repo
+### Git clone repo & Fix code
 
 ```
 git clone https://github.com/nv-tlabs/GET3D.git
@@ -33,6 +33,15 @@ git clone https://github.com/studio-YAIVERSE/MVP-AI.git
 ```
 
 You can just clone this repo into your own computer
+
+please change code  as follows.
+
+```
+GET3D/uni_rep/rep_3d/dmtet.py - ln 404
+
+(before) tets = np.load('data/tets/%d_compress.npz' % (grid_res))
+(after) tets = np.load('../data/tets/%d_compress.npz' % (grid_res))
+```
 
 ### Download checkpoints
 
@@ -77,6 +86,7 @@ GET3D_NADA
 If you want to train the code, please refer to the training script below.
 
 ```
+> GET3D_NADA
 > python train_nada_dist.py --config_path='experiments/{}.yaml' --name='{}' --suppress
 
 optional arguments
