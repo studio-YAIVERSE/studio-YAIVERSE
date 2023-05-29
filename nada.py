@@ -14,20 +14,16 @@ History
 """
 
 import torch
-from model_engine import Engine
 from clip_loss import CLIPLoss
+from functional import generate_custom, freeze_generator_layers, unfreeze_generator_layers
 
 
 class YAIverseGAN(torch.nn.Module):
 
-    def __init__(self, args_or_engine):
+    def __init__(self, engine):
         super(YAIverseGAN, self).__init__()
 
-        if isinstance(args_or_engine, Engine):  # with ddp
-            self.engine = args_or_engine
-        else:  # legacy - without ddp
-            self.engine = Engine.legacy_constructor(args_or_engine.config_path)
-
+        self.engine = engine
         self.device = self.engine.device
 
         self.generator_trainable, self.generator_frozen = self.engine.build_get3d_pair()
@@ -64,7 +60,8 @@ class YAIverseGAN(torch.nn.Module):
         self.auto_layer_k     = clip_kwargs['auto_layer_k']
         self.auto_layer_iters = clip_kwargs['auto_layer_iters']
         self.auto_layer_batch = clip_kwargs['auto_layer_batch']
-  
+
+        self.to(self.device)
 
     def get_loop_settings(self):
         g = self.engine.global_kwargs
@@ -100,7 +97,7 @@ class YAIverseGAN(torch.nn.Module):
         w_optim = torch.optim.SGD([w_tex_codes, w_geo_codes], lr=0.01)
 
         for _ in range(self.auto_layer_iters):
-            generated_from_w, _ = self.generator_trainable.generate_custom(tex_z=w_tex_codes, geo_z=w_geo_codes, mode='layer') # (B, C, H, W)
+            generated_from_w, _ = generate_custom(self.generator_trainable, tex_z=w_tex_codes, geo_z=w_geo_codes, mode='layer') # (B, C, H, W)
             generated_from_w = generated_from_w[:, :-1, :, :]   # [RGB image, Silhouette] (B,4,H,W) -> [RGB image] (B,3,H,W)
             w_loss = [self.clip_model_weights[model_name] * self.clip_loss_models[model_name].global_clip_loss(generated_from_w, self.target_text) for model_name in self.clip_model_weights.keys()]
             w_loss = torch.sum(torch.stack(w_loss))
@@ -138,18 +135,18 @@ class YAIverseGAN(torch.nn.Module):
         batch = tex_z.shape[0]
 
         if self.training and self.auto_layer_iters > 0:
-            self.generator_trainable.unfreeze_generator_layers([], [])
+            unfreeze_generator_layers(self.generator_trainable, [], [])
             topk_idx_tex, topk_idx_geo = self.determine_opt_layers()
-            self.generator_trainable.freeze_generator_layers()
-            self.generator_trainable.unfreeze_generator_layers(topk_idx_tex, topk_idx_geo)
+            freeze_generator_layers(self.generator_trainable)
+            unfreeze_generator_layers(self.generator_trainable, topk_idx_tex, topk_idx_geo)
 
         w_geo = self.generator_frozen.mapping_geo(geo_z, c_dim)
         w_tex = self.generator_frozen.mapping(tex_z, c_dim)
 
         with torch.no_grad():
-            frozen_img, _ = self.generator_frozen.generate_custom(tex_z=w_tex, geo_z=w_geo, c=c_dim, mode='nada')
+            frozen_img, _ = generate_custom(self.generator_frozen, tex_z=w_tex, geo_z=w_geo, c=c_dim, mode='nada')
 
-        trainable_img, _ = self.generator_trainable.generate_custom(tex_z=w_tex, geo_z=w_geo, c=c_dim, mode='nada')
+        trainable_img, _ = generate_custom(self.generator_trainable, tex_z=w_tex, geo_z=w_geo, c=c_dim, mode='nada')
 
         input_dict = {
             "src_img": frozen_img[:, :-1],
@@ -173,18 +170,22 @@ class YAIverseGAN(torch.nn.Module):
 if __name__ == "__main__":
 
     import argparse
+    import yaml
+    from model_engine import Engine
     parser = argparse.ArgumentParser()
     parser.add_argument('--config_path', type=str, default='experiments/default.yaml')
     args = parser.parse_args()
 
+    rank = 0
     device = "cuda:0"
-    ut_gan = YAIverseGAN(args).to(device)
+
+    ut_gan = YAIverseGAN(Engine(yaml.safe_load(args.config_path), rank))
 
     sample_z_geo = torch.randn(4, 512, device=device)
     sample_z_tex = torch.randn(4, 512, device=device)
 
     [img1, img2], loss = ut_gan(tex_z=sample_z_tex, geo_z=sample_z_geo)
-    
+
     print(img1.shape)
     print(loss)
     print("DONE!")

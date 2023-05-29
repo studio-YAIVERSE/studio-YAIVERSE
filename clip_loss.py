@@ -10,9 +10,10 @@ import torch.nn.functional as F
 
 import numpy as np
 
-import clip  # pip install ftfy regex tqdm \ pip install git+https://github.com/openai/CLIP.git
+import clip
 from PIL import Image
-from utils.text_templates import imagenet_templates, part_templates, imagenet_templates_small
+from utils.text_templates import imagenet_templates, part_templates
+
 
 class DirectionLoss(torch.nn.Module):
 
@@ -32,6 +33,7 @@ class DirectionLoss(torch.nn.Module):
             return 1. - self.loss_func(x, y)
         
         return self.loss_func(x, y)
+
 
 class CLIPLoss(torch.nn.Module):
     def __init__(self, device, lambda_direction=1., lambda_patch=0., lambda_global=0., lambda_manifold=0., lambda_texture=0., patch_loss_type='mae', direction_loss_type='cosine', clip_model='ViT-B/32'):

@@ -12,7 +12,7 @@ GLOBAL:
   outdir: 'results/shoes_mossy_example'                    # directory path to save ckpt & results
   resume_pretrain: '../pretrained_model/shoes-00204.pt' # path to pretrained GET3D model
   batch: 3                     # same as # of samples
-  gpus: 2                      # FIXME (WARNING) - in distributed learning, `gpus`(num of gpu) instead of `device` is required.
+  gpus: 2                      # num of gpu
 
   sample_1st: 500
   sample_2nd: -1

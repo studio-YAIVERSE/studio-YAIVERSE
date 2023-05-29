@@ -1,4 +1,57 @@
+### Modules & Weights ###
 experiments_original
-__pycache__
 results/
 *.pt
+
+### IDE ###
+.vscode
+.idea/
+*.iml
+modules.xml
+*.ipr
+
+### Python Cache ###
+*.log
+*.pyc
+__pycache__/
+
+### Python Virtual Environments ###
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+### OS Related ###
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.lnk

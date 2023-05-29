@@ -11,43 +11,25 @@ Reference
     - StyleGAN-NADA Github
         https://github.com/rinongal/StyleGAN-nada/blob/main/ZSSGAN/train.py
 
-
-TODO status
-
-    [ ][ ] = (naive | debug)
-        [v][ ] = naive code
-        [v][v] = debug complete
-
 """
 
 import sys
 import os
 
-from tqdm.std import tqdm
-
 import time
 import tempfile
 import yaml
-import torch
 import numpy as np
-from torch.nn.parallel import DistributedDataParallel
-
-import dist_util
+import torch
 import logging
 
-try:
-    from nada import YAIverseGAN
-    from model_engine import Engine
-    from utils.training_utils import save_images
+from model_engine import Engine, find_get3d
+from nada import YAIverseGAN
+from functional import unfreeze_generator_layers, generate_custom
+from utils import dist_util
+from utils.training_util import save_images
 
-    from torch_utils import custom_ops
-
-except ImportError:
-    sys.path.insert(0, os.path.abspath('../'))
-    from nada import YAIverseGAN
-    from model_engine import Engine
-    from utils.training_utils import save_images
-
+if find_get3d():
     from torch_utils import custom_ops
 
 _SEED = 0
@@ -83,10 +65,10 @@ def train(rank, config, args):
     with dist_util.synchronized_ops():
         engine = Engine(config, rank)
         net = YAIverseGAN(engine)
-        net.generator_trainable.unfreeze_generator_layers([], [])
+        unfreeze_generator_layers(net.generator_trainable, [], [])
 
     if dist_util.get_world_size() > 1:
-        ddp_net = DistributedDataParallel(
+        ddp_net = torch.nn.parallel.DistributedDataParallel(
             net,
             device_ids=[dist_util.dev()],
             output_device=dist_util.dev(),
@@ -147,7 +129,7 @@ def train(rank, config, args):
             ddp_net.train()
 
             # memory-efficient forward : support n_view rendering
-            [sampled_src, sampled_dst], loss = ddp_net(z_tex_chunk, z_geo_chunk)
+            _, loss = ddp_net(z_tex_chunk, z_geo_chunk)
 
             if epoch == iter_1st - 1:  # to choose 50 latents with low loss value
                 loss_val = loss.cpu().detach().numpy().tolist()
@@ -171,7 +153,8 @@ def train(rank, config, args):
                     if i % output_interval == 0:
                         ddp_net.eval()
                         with torch.no_grad():
-                            sampled_dst, _ = net.generator_trainable.generate_custom(
+                            sampled_dst, _ = generate_custom(
+                                net.generator_trainable,
                                 fixed_z_tex, fixed_z_geo,
                                 use_mapping=True, mode='layer', camera=eval_camera
                             )
@@ -220,7 +203,7 @@ def train(rank, config, args):
             # training
             ddp_net.train()
 
-            [sampled_src, sampled_dst], loss = ddp_net(z_tex_chunk, z_geo_chunk)
+            _, loss = ddp_net(z_tex_chunk, z_geo_chunk)
             
             loss = loss.mean()
             ddp_net.zero_grad()
@@ -231,7 +214,6 @@ def train(rank, config, args):
             else :
                 torch.nn.utils.clip_grad_norm_(net.generator_trainable.parameters(), gradient_clip_threshold)
 
-            
             logger.info(f'ITER 2nd | EPOCH : {epoch} | STEP : {i:0>4} | LOSS : {loss:.5f}')
 
             # evaluation & save results | save checkpoints
@@ -250,7 +232,10 @@ def train(rank, config, args):
                         ddp_net.eval()
 
                         with torch.no_grad():
-                            sampled_dst, _ = net.generator_trainable.generate_custom(fixed_z_tex, fixed_z_geo, use_mapping=True, mode='layer', camera=eval_camera)
+                            sampled_dst, _ = generate_custom(
+                                net.generator_trainable,
+                                fixed_z_tex, fixed_z_geo, use_mapping=True, mode='layer', camera=eval_camera
+                            )
 
                         rgb = sampled_dst[:, :-1]
                         mask = sampled_dst[:,-1:]
@@ -263,7 +248,6 @@ def train(rank, config, args):
                         logger.info(f'ITER 2nd | EPOCH : {epoch} | STEP : {i:0>4} | >> Save images ...')
 
                     if i % save_interval == 0:
-                    
                         if not args.suppress:
                             torch.save(
                                 {
@@ -276,7 +260,6 @@ def train(rank, config, args):
                             logger.info(f'ITER 2nd | EPOCH : {epoch} | STEP : {i:0>4} | >> Save checkpoint ...')
 
                         if loss < min_loss:
-                            
                             min_loss = loss
                             torch.save(
                                     {
@@ -299,7 +282,10 @@ def train(rank, config, args):
             with torch.no_grad():
                 last_z_geo = torch.randn(n_vis, z_dim, device=device)
                 last_z_tex = torch.randn(n_vis, z_dim, device=device)
-                sampled_dst, _ = net.generator_trainable.generate_custom(last_z_tex, last_z_geo, use_mapping=True, mode='layer', camera=eval_camera)
+                sampled_dst, _ = generate_custom(
+                    net.generator_trainable,
+                    last_z_tex, last_z_geo, use_mapping=True, mode='layer', camera=eval_camera
+                )
 
             save_images(sampled_dst, sample_dir, f'params_latest_images', grid_rows)
 

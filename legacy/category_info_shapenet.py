@@ -88,8 +88,3 @@ if __name__ == "__main__":
 
     with open('scale_info_0507.json', 'w') as f:
         json.dump(categories_info, f, indent=4)
-
-                    
-                    
-                        
-        

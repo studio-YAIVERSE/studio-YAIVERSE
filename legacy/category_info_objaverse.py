@@ -80,8 +80,3 @@ if __name__ == "__main__":
 
     with open('/opt/myspace/dhkim/GET3D/yaiverse/scale_info_objaverse.json', 'w') as f:
         json.dump(categories_info, f, indent=4)
-
-                    
-                    
-                        
-        
