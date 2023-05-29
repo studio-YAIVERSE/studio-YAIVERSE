@@ -1,9 +1,13 @@
 ## Introduction
 Text-guided 3D synthesis by GET3D + NADA
 
-예시 그림1
-예시 그림2
-예시 그림3
+| Car &rarr; Police Car | Car &rarr; Sketch |
+| --- | --- |
+|![car_policecar](https://github.com/studio-YAIVERSE/MVP-AI/assets/59243570/4266eb87-ab5d-4357-bf7e-27372c47489e) | ![car_sketch](https://github.com/studio-YAIVERSE/MVP-AI/assets/59243570/b495e84f-5e91-4ec3-9720-65aebc19fb27) |
+| Motorbike &rarr; Tiger | . |
+| ![motorbike_tiger](https://github.com/studio-YAIVERSE/MVP-AI/assets/59243570/7086c79f-2e2c-40cf-82e7-4fb96e5dd060) | . |
+
+You can make any other interesting stylish 3D object!
 
 <br>
 
@@ -29,6 +33,16 @@ git clone https://github.com/studio-YAIVERSE/MVP-AI.git
 ```
 
 You can just clone this repo into your own computer
+
+### Download checkpoints
+
+For GET3D + NADA, you need pretrained model's checkpoint. You can set downloaded ckpt path at yaml file.
+
+- Car, Chair, Table, Motorbike &rarr; https://github.com/nv-tlabs/GET3D/tree/master/pretrained_model
+
+- Fruits, Shoe &rarr; https://huggingface.co/datasets/allenai/objaverse/discussions/1#63c0441bd9e14fd8875cec97
+
+<br>
 
 And finally the directory hierarchy is configured as,
 
@@ -80,6 +94,8 @@ EX)
 When you open yaml file, you could see many trainable parameters and configs.
 
 Among them, below are some important parameters you could change as you conduct an experiment.
+
+We provide some yaml files as examples. 
 
 <br>
 
