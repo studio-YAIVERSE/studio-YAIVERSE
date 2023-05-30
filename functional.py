@@ -1,3 +1,10 @@
+"""
+Component Description
+    - Methods (functions) for GET3D generator, required for NADA training and inference
+Author
+    - Minsu Kim
+    - Dongha Kim
+"""
 import torch
 import nvdiffrast.torch as dr
 from typing import TYPE_CHECKING

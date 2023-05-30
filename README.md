@@ -5,10 +5,9 @@
 </h4>
 <br>
 
-# studio-YAIVRSE
+# Studio-YAIverse
 
-## Introduction
-Text-guided 3D synthesis by GET3D + NADA
+### "Text-guided 3D synthesis by GET3D + NADA"
 
 |                                                     |                                             |
 |-----------------------------------------------------|---------------------------------------------|
@@ -43,6 +42,8 @@ cd studio-YAIVERSE
 git submodule sync && git submodule update --init --recursive
 ```
 
+<br>
+
 ### Environment setup with Docker or Anaconda
 
 - Docker container
@@ -60,6 +61,8 @@ conda create -n get3d python=3.8
 conda activate get3d
 pip install -r requirements.txt
 ```
+
+<br>
 
 ### Download checkpoints
 
@@ -80,10 +83,10 @@ GET3D
 |	|	├── *.yaml
 |	|	└── ....
 |	├── results
-|	|	├── default_dist
+|	|	├── default
 |	|	|	  ├── checkpoint
 |	|	|	  ├── sample
-|	|	|	  └── default_dist_date.log
+|	|	|	  └── default_date.log
 |	|	└── ....
 |	├── sample_img
 |	├── utils
@@ -93,7 +96,7 @@ GET3D
 |	├── dist_util.py
 |	├── model_engine.py
 |	├── nada.py
-|	└── train_nada_dist.py
+|	└── train_nada.py
 ├── 3dgan_data_split
 ├── data
 └── ....
@@ -111,10 +114,10 @@ studio-YAIVERSE
 |	├── *.yaml
 |	└── ....
 ├── results
-|	├── default_dist
+|	├── default
 |	|	  ├── checkpoint
 |	|	  ├── sample
-|	|	  └── default_dist_date.log
+|	|	  └── default_date.log
 |	└── ....
 ├── sample_img
 ├── utils
@@ -124,7 +127,7 @@ studio-YAIVERSE
 ├── dist_util.py
 ├── model_engine.py
 ├── nada.py
-└── train_nada_dist.py
+└── train_nada.py
 ```
 
 <br>
@@ -139,7 +142,7 @@ If you want to train the code, please refer to the training script below.
 
 ```
 > GET3D_NADA
-> python train_nada_dist.py --config_path='experiments/{}.yaml' --name='{}' --suppress
+> python train_nada.py --config_path='experiments/{}.yaml' --name='{}' --suppress
 
 optional arguments
 	--config_path             select yaml file to run (in experiments folder)
@@ -147,7 +150,7 @@ optional arguments
 	--suppress                store only latest & best pkl file
 
 EX)
-> python train_nada_dist.py --config_path='experiments/car_police_example.yaml' --name='car_police' --suppress
+> python train_nada.py --config_path='experiments/car_police_example.yaml' --name='car_police' --suppress
 ```
 
 <br>
@@ -192,11 +195,17 @@ We provide some yaml files as examples.
 
 <br>
 
+### Our checkpoint
+
+- We provide our checkpoint for some text templates, in backend repository. See [checkpoint release](https://github.com/studio-YAIVERSE/Backend/releases/tag/1.0.0).
+
+<br>
+
 ---
 
-### Appendix
+## Appendix
 
-#### CLIP util
+### CLIP util
 * We provide `scripts/clip_save.py` to avoid 'connection reset by peer' error from CLIP library, which accidentally stops the runtime.
 
 1. Do `python scripts/clip_save.py`, and then you can get `clip-cnn.pt` / `clip-vit-b-16.pt` / `clip-vit-b-32.pt`
@@ -205,17 +214,17 @@ We provide some yaml files as examples.
    - `clip.load('ViT-B/16')` &rarr; `clip.load('/PATH/TO/clip-vit-b-16.pt')`
    - `clip.load('ViT-B/32')` &rarr; `clip.load('/PATH/TO/clip-vit-b-32.pt')`
 
-#### Image to Video
+### Image to Video
 
 * We provide `scripts/image_to_video.py` to convert image sequences into a video.
-
+* Do `python scripts/image_to_video.py -i /PATH/TO/INPUT_IMAGE_DIR -o /PATH/TO/OUTPUT_VIDEO_FILE`
 * This code is used for visualizing our result like Introduction section.
 
 <br>
 
 ---
 
-### Note
+## Note
 
 * Please note that this is not official code by GET3D authors. There may be differences in detail from the original.
 

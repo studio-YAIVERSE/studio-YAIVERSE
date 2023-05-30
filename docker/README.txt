@@ -1,0 +1,1 @@
+Build your docker image by `docker build -f Dockerfile -t studio-yaiverse:v1 .`

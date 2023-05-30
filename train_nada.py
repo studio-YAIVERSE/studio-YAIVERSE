@@ -1,4 +1,12 @@
 """
+Script Description
+    - train NADA model
+Usage
+    - $ python train_nada.py --config_path [config_path] --name [exp_name] --suppress
+    - $ cat [config_path] | python train_nada.py --pipe --name [exp_name] --suppress
+Author
+    - Minsu Kim
+    - Dongha Kim
 History
     - 230419 : MINSU , init
         - adaptation loop
@@ -6,11 +14,9 @@ History
     - 230422 : MINSU , implement
         - code corresponding to GET3D application 4.3.2
     - 230422 : DONGHA , convert as distributed script
-
 Reference
     - StyleGAN-NADA Github
         https://github.com/rinongal/StyleGAN-nada/blob/main/ZSSGAN/train.py
-
 """
 
 import sys
@@ -23,10 +29,10 @@ import numpy as np
 import torch
 import logging
 
-from model_engine import Engine, find_get3d
+import dist_util
+from model_engine import find_get3d
 from nada import YAIverseGAN
 from functional import unfreeze_generator_layers, generate_custom
-from utils import dist_util
 from utils.training_util import save_images
 
 if find_get3d():
@@ -54,17 +60,20 @@ def get_logger(exp_name, outdir, rank=0):
     return logger
 
 
-def train(rank, config, args):
+def subprocess_fn(rank, config, args, temp_dir):
 
-    # ------------------ Settings ------------------
+    if config['GLOBAL']['gpus'] > 1:
+        dist_util.setup_dist(temp_dir, rank, config['GLOBAL']['gpus'])
+
+    if rank != 0:
+        custom_ops.verbosity = 'none'
 
     if rank == 0:
         print("START ! EXP NAME : ", args.name)
         print("SETTING : LOAD YaiverseGAN")
 
     with dist_util.synchronized_ops():
-        engine = Engine(config, rank)
-        net = YAIverseGAN(engine)
+        net = YAIverseGAN(config)
         unfreeze_generator_layers(net.generator_trainable, [], [])
 
     if dist_util.get_world_size() > 1:
@@ -141,7 +150,7 @@ def train(rank, config, args):
 
             if gradient_clip_threshold == -1:
                 pass
-            else :
+            else:
                 torch.nn.utils.clip_grad_norm_(net.generator_trainable.parameters(), gradient_clip_threshold)
 
             g_optim.step()
@@ -160,8 +169,8 @@ def train(rank, config, args):
                             )
                         
                         rgb = sampled_dst[:, :-1]
-                        mask = sampled_dst[:,-1:]
-                        bg = torch.ones((rgb.shape), device=device)
+                        mask = sampled_dst[:, -1:]
+                        bg = torch.ones(rgb.shape, device=device)
                         bg *= 0.0001    # for better background 
                         new_dst = rgb*mask + bg*(1-mask)
 
@@ -185,8 +194,7 @@ def train(rank, config, args):
     logger.info(f"SELCT TOP {_SELECT} Latents")
     # min_topk_val, min_topk_idx = torch.topk(torch.tensor(min_loss_store), _SELECT) #previous
     min_topk_val, min_topk_idx = torch.topk(torch.tensor(min_loss_store), _SELECT, largest=False)
-    print("SELECT : " , min_topk_val, min_topk_idx)
-
+    print("SELECT : ", min_topk_val, min_topk_idx)
 
     # ------------------ Training 2nd --------------
 
@@ -211,7 +219,7 @@ def train(rank, config, args):
 
             if gradient_clip_threshold == -1:
                 pass
-            else :
+            else:
                 torch.nn.utils.clip_grad_norm_(net.generator_trainable.parameters(), gradient_clip_threshold)
 
             logger.info(f'ITER 2nd | EPOCH : {epoch} | STEP : {i:0>4} | LOSS : {loss:.5f}')
@@ -238,8 +246,8 @@ def train(rank, config, args):
                             )
 
                         rgb = sampled_dst[:, :-1]
-                        mask = sampled_dst[:,-1:]
-                        bg = torch.ones((rgb.shape), device=device)
+                        mask = sampled_dst[:, -1:]
+                        bg = torch.ones(rgb.shape, device=device)
                         bg *= 0.0001    # for better background 
                         new_dst = rgb*mask + bg*(1-mask)
 
@@ -292,15 +300,8 @@ def train(rank, config, args):
     logger.info("FINISH !")
 
 
-def subprocess_fn(rank, config, args, temp_dir):  # Multiprocessing worker function
-    if config['GLOBAL']['gpus'] > 1:
-        dist_util.setup_dist(temp_dir, rank, config['GLOBAL']['gpus'])
-    if rank != 0:
-        custom_ops.verbosity = 'none'
-    train(rank, config, args)
-
-
 def launch_training(args):  # Multiprocessing spawning function
+    # Load config and parse the number of GPUs.
     if args.pipe:
         config = yaml.safe_load(sys.stdin)
     else:
@@ -308,21 +309,27 @@ def launch_training(args):  # Multiprocessing spawning function
             config = yaml.safe_load(f)
     gpus = config['GLOBAL']['gpus']
 
-    # Launch processes.
+    # In case of single GPU, directly call the training function.
+    if gpus == 1:
+        subprocess_fn(0, config, args, None)
+        return
+
+    # Otherwise, launch processes.
     print('Launching processes...')
     torch.multiprocessing.set_start_method('spawn', force=True)
     with tempfile.TemporaryDirectory() as temp_dir:
-        if gpus == 1:
-            subprocess_fn(0, config, args, temp_dir)
-        else:
-            torch.multiprocessing.spawn(fn=subprocess_fn, args=(config, args, temp_dir), nprocs=gpus)
+        torch.multiprocessing.spawn(fn=subprocess_fn, args=(config, args, temp_dir), nprocs=gpus)
 
 
-if __name__ == '__main__':
+def parse_args():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--config_path', type=str, default='experiments/default_dist.yaml')
     parser.add_argument('--name', type=str, default='default_dist')
     parser.add_argument('--pipe', action='store_true', help='read config from stdin instead of file')
     parser.add_argument('--suppress', action='store_true')
-    launch_training(parser.parse_args())
+    return parser.parse_args()
+
+
+if __name__ == '__main__':
+    launch_training(parse_args())

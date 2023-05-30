@@ -1,45 +1,43 @@
 """
-To avoid 'Connection Reset by Peer' error by CLIP library, get ckpt using torch.jit
+Script Description
+    - To avoid 'Connection Reset by Peer' error by CLIP library, save checkpoint using torch.jit
+Usage
+    - $ python scripts/clip_save.py <output_dir> [--test] [--device <device>]
+Author
+    - Minsu Kim
 """
 
-import torch
-import clip  # pip install ftfy regex tqdm \ pip install git+https://github.com/openai/CLIP.git
+
+def parse_args():
+    import argparse
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-o', '--output_dir', type=str, default='.', help='output checkpoint file directory')
+    parser.add_argument('-t', '--test', action='store_true', help='to test checkpoint')
+    parser.add_argument('-d', '--device', type=str, default='cuda:0', help='device to use in testing')
+    return parser.parse_args()
 
 
-if __name__ == "__main__":
+def main(args):
+    import os
+    import torch
+    import clip
 
-    device = "cuda:0"
-    
-    model32, preprocess = clip.load('ViT-B/32', jit=True)
-    model16, preprocess = clip.load('ViT-B/16', jit=True)
-    modelcnn, _ = clip.load('RN50', jit=True)
+    torch.jit.save(clip.load('ViT-B/32', jit=True)[0], os.path.join(args.output_dir, 'clip-vit-b-32.pt'))
+    torch.jit.save(clip.load('ViT-B/16', jit=True)[0], os.path.join(args.output_dir, 'clip-vit-b-16.pt'))
+    torch.jit.save(clip.load('RN50', jit=True)[0], os.path.join(args.output_dir, 'clip-cnn.pt'))
 
-    # torch.save(model32, 'clip-vit-b-32.pt')
-    torch.jit.save(model32, 'clip-vit-b-32.pt')
-    torch.jit.save(model16, 'clip-vit-b-16.pt')
-    torch.jit.save(modelcnn, 'clip-cnn.pt')
+    model32, _ = clip.load(os.path.join(args.output_dir, 'clip-vit-b-32.pt'))
+    model16, _ = clip.load(os.path.join(args.output_dir, 'clip-vit-b-16.pt'))
+    modelcnn, _ = clip.load(os.path.join(args.output_dir, 'clip-cnn.pt'))
 
-    model32_re, _ = clip.load('clip-vit-b-32.pt')
-    model16_re, _ = clip.load('clip-vit-b-16.pt')
+    if args.test:
+        text = 'rusty car'
+        embed32 = model32.encode_text(clip.tokenize(text).to(args.device))
+        print(embed32.shape)
+        embed16 = model16.encode_text(clip.tokenize(text).to(args.device))
+        print(embed16.shape)
+        print((embed16 * embed32).sum())
 
-    text = 'rusty car'
-    embed32 = model32_re.encode_text(clip.tokenize(text).to(device))
-    print(embed32.shape)
-    embed16 = model16_re.encode_text(clip.tokenize(text).to(device))
-    print(embed16.shape)
-    print((embed16 * embed32).sum())
 
-    # print(model32.__dict__.keys())
-    # print(model16.__dict__)
-    # print("SAVE")
-    # torch.jit.save(model32, 'clip-vit-b-32.pt' )
-
-    # print("LOAD")
-    # model32_re = torch.jit.load('clip-vit-b-32.pt', map_location=device).eval()
-
-    # embed = model32_re.encode_text('rusty car')
-    # print(embed.shape)
-    # """
-    # _modules : 'visual' 'token embedding' 'ln_final' 
-    #             'positional embedding' 'text projection'
-    # """
+if __name__ == '__main__':
+    main(parse_args())
