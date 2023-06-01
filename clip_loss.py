@@ -33,7 +33,7 @@ import numpy as np
 
 import clip
 from PIL import Image
-from utils.text_templates import imagenet_templates, part_templates
+from text_templates import imagenet_templates, part_templates
 
 
 class DirectionLoss(torch.nn.Module):
@@ -424,7 +424,6 @@ if __name__ == "__main__":
     tar_t2 = loss.get_text_features(template_t2 % tar)
     tar_t3 = loss.get_text_features(template_t3 % tar)
 
-
     l1 = loss.angle_loss(src_ft, tar_ft)
     l1_g1 = loss.angle_loss(src_g1, tar_g1)
     l1_g2 = loss.angle_loss(src_g2, tar_g2)
@@ -440,4 +439,3 @@ if __name__ == "__main__":
     print(l1_t1)
     print(l1_t2)
     print(l1_t3)
-    

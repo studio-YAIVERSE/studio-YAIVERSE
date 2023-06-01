@@ -27,13 +27,13 @@ import tempfile
 import yaml
 import numpy as np
 import torch
+from torchvision.utils import save_image
 import logging
 
 import dist_util
 from model_engine import find_get3d
 from nada import YAIverseGAN
 from functional import unfreeze_generator_layers, generate_custom
-from utils.training_util import save_images
 
 if find_get3d():
     from torch_utils import custom_ops
@@ -174,7 +174,13 @@ def subprocess_fn(rank, config, args, temp_dir):
                         bg *= 0.0001    # for better background 
                         new_dst = rgb*mask + bg*(1-mask)
 
-                        save_images(new_dst, sample_dir, f"Iter1st_Epoch-{epoch}_Step-{i:0>4}", grid_rows)
+                        save_image(
+                            new_dst,
+                            os.path.join(sample_dir, f"Iter1st_Epoch-{epoch}_Step-{i:0>4}.png"),
+                            nrow=grid_rows,
+                            normalize=True,
+                            range=(-1, 1),
+                        )
                         logger.info(f'ITER 1st | EPOCH : {epoch} | STEP : {i:0>4} | >> Save images ...')
 
                     if i % save_interval == 0 and not args.suppress:
@@ -251,7 +257,13 @@ def subprocess_fn(rank, config, args, temp_dir):
                         bg *= 0.0001    # for better background 
                         new_dst = rgb*mask + bg*(1-mask)
 
-                        save_images(new_dst, sample_dir, f"Iter2nd_Epoch-{epoch}_Step-{i:0>4}", grid_rows)
+                        save_image(
+                            new_dst,
+                            os.path.join(sample_dir, f"Iter2nd_Epoch-{epoch}_Step-{i:0>4}.png"),
+                            nrow=grid_rows,
+                            normalize=True,
+                            range=(-1, 1),
+                        )
 
                         logger.info(f'ITER 2nd | EPOCH : {epoch} | STEP : {i:0>4} | >> Save images ...')
 
@@ -295,7 +307,13 @@ def subprocess_fn(rank, config, args, temp_dir):
                     last_z_tex, last_z_geo, use_mapping=True, mode='layer', camera=eval_camera
                 )
 
-            save_images(sampled_dst, sample_dir, f'params_latest_images', grid_rows)
+            save_image(
+                sampled_dst,
+                os.path.join(sample_dir, "params_latest_images.png"),
+                nrow=grid_rows,
+                normalize=True,
+                range=(-1, 1),
+            )
 
     logger.info("FINISH !")
 
