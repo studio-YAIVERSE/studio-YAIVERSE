@@ -68,9 +68,9 @@ pip install -r requirements.txt
 
 For GET3D + NADA, you need pretrained model's checkpoint. You can set downloaded ckpt path at yaml file.
 
-- Car, Chair, Table, Motorbike &rarr; https://github.com/nv-tlabs/GET3D/tree/master/pretrained_model
+- Car, Chair, Table, Motorbike &rarr; [link](https://github.com/nv-tlabs/GET3D/tree/master/pretrained_model)
 
-- Fruits, Shoe &rarr; https://huggingface.co/datasets/allenai/objaverse/discussions/1#63c0441bd9e14fd8875cec97
+- Fruits, Shoe &rarr; [link](https://huggingface.co/datasets/allenai/objaverse/discussions/1#63c0441bd9e14fd8875cec97)
 
 <br>
 
@@ -78,24 +78,34 @@ And finally the directory hierarchy is configured as,
 
 ```
 GET3D
-├── studio-YAIVERSE
+├── studio-YAIVERSE (= Your Working Directory)
+|	├── assets
+|	├── docker
 |	├── experiments
 |	|	├── *.yaml
 |	|	└── ....
+|	├── legacy
 |	├── results
 |	|	├── default
 |	|	|	  ├── checkpoint
 |	|	|	  ├── sample
 |	|	|	  └── default_date.log
 |	|	└── ....
+|	├── scripts
+|	|	├── README.md
+|	|	├── clip_save.py
+|	|	├── image_to_video.py
+|	|	└── render_shapenet_multigpu.py
 |	├── sample_img
-|	├── utils
-|	├── addon.py
+|	├── LICENSE
+|	├── README.md
 |	├── clip_loss.py
-|	├── clip_save.py
 |	├── dist_util.py
+|	├── functional.py
 |	├── model_engine.py
 |	├── nada.py
+|	├── requirements.txt
+|	├── text_templates.py
 |	└── train_nada.py
 ├── 3dgan_data_split
 ├── data
@@ -105,28 +115,38 @@ GET3D
 or,
 
 ```
-studio-YAIVERSE
+studio-YAIVERSE (= Your Working Directory)
 ├── GET3D (submodule)
 |	├── 3dgan_data_split
 |	├── data
 |	└── ....
+├── assets
+├── docker
 ├── experiments
 |	├── *.yaml
 |	└── ....
+├── legacy
 ├── results
 |	├── default
 |	|	  ├── checkpoint
 |	|	  ├── sample
 |	|	  └── default_date.log
 |	└── ....
+├── scripts
+|	├── README.md
+|	├── clip_save.py
+|	├── image_to_video.py
+|	└── render_shapenet_multigpu.py
 ├── sample_img
-├── utils
-├── addon.py
+├── LICENSE
+├── README.md
 ├── clip_loss.py
-├── clip_save.py
 ├── dist_util.py
+├── functional.py
 ├── model_engine.py
 ├── nada.py
+├── requirements.txt
+├── text_templates.py
 └── train_nada.py
 ```
 
@@ -141,8 +161,8 @@ studio-YAIVERSE
 If you want to train the code, please refer to the training script below.
 
 ```
-> GET3D_NADA
-> python train_nada.py --config_path='experiments/{}.yaml' --name='{}' --suppress
+$ # working directory: studio-YAIVERSE
+$ python train_nada.py --config_path='experiments/{}.yaml' --name='{}' --suppress
 
 optional arguments
 	--config_path             select yaml file to run (in experiments folder)
@@ -150,7 +170,7 @@ optional arguments
 	--suppress                store only latest & best pkl file
 
 EX)
-> python train_nada.py --config_path='experiments/car_police_example.yaml' --name='car_police' --suppress
+$ python train_nada.py --config_path='experiments/car_police_example.yaml' --name='car_police' --suppress
 ```
 
 <br>
@@ -161,7 +181,7 @@ When you open yaml file, you could see many trainable parameters and configs.
 
 Among them, below are some important parameters you could change as you conduct an experiment.
 
-We provide some yaml files as examples. 
+We provide some yaml files as [examples](./experiments).
 
 <br>
 
@@ -234,5 +254,7 @@ We provide some yaml files as examples.
 ## Note
 
 * Please note that this is not official code by GET3D authors. There may be differences in detail from the original.
+
+* [`TAPS3D`](https://github.com/studio-YAIVERSE/studio-YAIVERSE/tree/TAPS3D) branch contains our incomplete trial of GET3D training code + TAPS3D training code.
 
 * If you have any question for our team project, don't hesitate to leave an issue or email to [minsu1206@yonsei.ac.kr](mailto:minsu1206@yonsei.ac.kr). Thanks.
