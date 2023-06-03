@@ -7,6 +7,9 @@
 # without an express license agreement from NVIDIA CORPORATION or 
 # its affiliates is strictly prohibited.
 
+# History:
+#   - 230426 : DONGHA - Add CLIP Dependency
+
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:21.08-py3
 FROM $BASE_IMAGE
 
@@ -49,3 +52,7 @@ RUN pip install meshzoo ipdb imageio gputil h5py point-cloud-utils imageio image
 
 # HDR image support
 RUN imageio_download_bin freeimage
+
+# DONGHA - CLIP Dependency
+RUN pip install ftfy regex tqdm
+RUN pip install git+https://github.com/openai/CLIP.git

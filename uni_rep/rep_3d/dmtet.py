@@ -396,12 +396,19 @@ def sdf_reg_loss_batch(sdf, all_edges):
 class DMTetGeometry(Geometry):
     def __init__(
             self, grid_res=64, scale=2.0, device='cuda', renderer=None,
-            render_type='neural_render', args=None):
+            render_type='neural_render', args=None,
+            tet_path='' # MINSU
+            ):
         super(DMTetGeometry, self).__init__()
         self.grid_res = grid_res
         self.device = device
         self.args = args
-        tets = np.load('data/tets/%d_compress.npz' % (grid_res))
+        # ------------------ Customize ----------------- # MINSU
+        if tet_path != '':
+            tets = np.load(os.path.join(tet_path, '%d_compress.npz' % (grid_res)))
+        else:
+            tets = np.load('data/tets/%d_compress.npz' % (grid_res))
+            
         self.verts = torch.from_numpy(tets['vertices']).float().to(self.device)
         # Make sure the tet is zero-centered and length is equal to 1
         length = self.verts.max(dim=0)[0] - self.verts.min(dim=0)[0]

@@ -19,6 +19,18 @@ from training.discriminator_architecture import Discriminator
 from training.geometry_predictor import Conv3DImplicitSynthesisNetwork, TriPlaneTex, \
     MappingNetwork, ToRGBLayer, TriPlaneTexGeo
 
+"""
+History
+    - ? : Jungbin , time measure
+        - functions for inference speed measurement
+    - 0416 : MINSU , get thumbnail
+        - def generate_custom
+    - 0420 : MINSU , layer-freezing
+        - def *_triplane_layers* for layer-freezing (from NADA)
+    - 0422 : MINSU , efficient-forward for NADA
+        - fix def generate_custom
+"""
+
 
 @persistence.persistent_class
 class DMTETSynthesisNetwork(torch.nn.Module):
@@ -41,6 +53,7 @@ class DMTETSynthesisNetwork(torch.nn.Module):
             dmtet_scale=1.8,
             inference_noise_mode='random',
             one_3d_generator=False,
+            tet_path='',
             **block_kwargs,  # Arguments for SynthesisBlock.
     ):  #
         assert img_resolution >= 4 and img_resolution & (img_resolution - 1) == 0
@@ -74,7 +87,7 @@ class DMTETSynthesisNetwork(torch.nn.Module):
         # Geometry class for DMTet
         self.dmtet_geometry = DMTetGeometry(
             grid_res=self.grid_res, scale=self.dmtet_scale, renderer=dmtet_renderer, render_type=render_type,
-            device=self.device)
+            device=self.device, tet_path=tet_path)
 
         self.feat_channel = feat_channel
         self.mlp_latent_channel = mlp_latent_channel
@@ -416,6 +429,317 @@ class DMTETSynthesisNetwork(torch.nn.Module):
             all_network_output.append(network_out)
         network_out = torch.cat(all_network_output, dim=0)
         return mesh_v, mesh_f, all_uvs, all_mesh_tex_idx, network_out
+    
+##########################################정빈###############################
+    def extract_3d_shape_for_inferencetime_measure(
+            self, ws, ws_geo=None, texture_resolution=2048,
+            **block_kwargs):
+        '''
+        measuring inferencetime by정빈
+        '''
+        starter = torch.cuda.Event(enable_timing=True)
+        ender = torch.cuda.Event(enable_timing=True)
+        
+        # Step 1: predict geometry first
+        
+        if self.one_3d_generator:
+            starter.record()
+            sdf_feature, tex_feature = self.generator.get_feature(
+                ws[:, :self.generator.tri_plane_synthesis.num_ws_tex],
+                ws_geo[:, :self.generator.tri_plane_synthesis.num_ws_geo])
+            ender.record()
+            torch.cuda.synchronize()
+            triplane_gen_time = starter.elapsed_time(ender)       # millisecond
+
+            ws = ws[:, self.generator.tri_plane_synthesis.num_ws_tex:]
+            ws_geo = ws_geo[:, self.generator.tri_plane_synthesis.num_ws_geo:]
+            starter.record()
+            mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = self.get_geometry_prediction(ws_geo, sdf_feature)
+            ender.record()
+            torch.cuda.synchronize()
+            DMTet_time = starter.elapsed_time(ender) 
+        else:
+            mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = self.get_geometry_prediction(ws_geo)
+
+        # Step 2: use x-atlas to get uv mapping for the mesh
+        starter.record()
+        from training.extract_texture_map import xatlas_uvmap
+        all_uvs = []
+        all_mesh_tex_idx = []
+        all_gb_pose = []
+        all_uv_mask = []
+        if self.dmtet_geometry.renderer.ctx is None:
+            self.dmtet_geometry.renderer.ctx = dr.RasterizeGLContext(device=self.device)
+        for v, f in zip(mesh_v, mesh_f):
+            uvs, mesh_tex_idx, gb_pos, mask = xatlas_uvmap(
+                self.dmtet_geometry.renderer.ctx, v, f, resolution=texture_resolution)
+            all_uvs.append(uvs)
+            all_mesh_tex_idx.append(mesh_tex_idx)
+            all_gb_pose.append(gb_pos)
+            all_uv_mask.append(mask)
+
+        tex_hard_mask = torch.cat(all_uv_mask, dim=0).float()
+
+        # Step 3: Query the texture field to get the RGB color for texture map
+        # we use run one per iteration to avoid OOM error
+        all_network_output = []
+        ender.record()
+        torch.cuda.synchronize()
+        x_atlas_time = starter.elapsed_time(ender) 
+        starter.record()
+        for _ws, _all_gb_pose, _ws_geo, _tex_hard_mask in zip(ws, all_gb_pose, ws_geo, tex_hard_mask):
+            if self.one_3d_generator:
+                tex_feat = self.get_texture_prediction(
+                    _ws.unsqueeze(dim=0), [_all_gb_pose],
+                    _ws_geo.unsqueeze(dim=0).detach(),
+                    _tex_hard_mask.unsqueeze(dim=0),
+                    tex_feature)
+            else:
+                tex_feat = self.get_texture_prediction(
+                    _ws.unsqueeze(dim=0), [_all_gb_pose],
+                    _ws_geo.unsqueeze(dim=0).detach(),
+                    _tex_hard_mask.unsqueeze(dim=0))
+            background_feature = torch.zeros_like(tex_feat)
+            # Merge them together
+            img_feat = tex_feat * _tex_hard_mask.unsqueeze(dim=0) + background_feature * (
+                    1 - _tex_hard_mask.unsqueeze(dim=0))
+            network_out = self.to_rgb(img_feat.permute(0, 3, 1, 2), _ws.unsqueeze(dim=0)[:, -1])
+            all_network_output.append(network_out)
+        network_out = torch.cat(all_network_output, dim=0)
+        ender.record()
+        torch.cuda.synchronize()
+        tex_prediction_time = starter.elapsed_time(ender) 
+        
+        return triplane_gen_time,DMTet_time,x_atlas_time, tex_prediction_time
+########################################################################################3
+    
+    # ------------------------ MINSU ------------------------ #
+    
+    # 0511
+    def generate_cam_from_angle(self, camera):  
+        # print("GET3D_objaverse : generate_cam_from_angle", camera)
+        r = 1.2
+        batch = camera.shape[0]
+        sample_r = torch.rand((batch, 1), device=self.device)
+        sample_r = sample_r * r + (1 - sample_r) * r
+        world2cam_matrix, forward_vector, camera_origin, rotation_angle, elevation_angle = create_camera_from_angle(
+            theta=camera[:, 0].unsqueeze(-1), 
+            phi=camera[:, 1].unsqueeze(-1),
+            sample_r=sample_r, device=self.device
+        )
+
+        mv_batch = world2cam_matrix
+        campos = camera_origin
+        campos = campos.reshape(batch, self.n_views, 3)
+        cam_mv = mv_batch.reshape(batch, self.n_views, 4, 4)
+        
+        gen_camera = (campos, cam_mv, sample_r, rotation_angle, elevation_angle)
+        return cam_mv, campos, gen_camera
+    
+
+    # 04
+    def generate_custom(self, ws, ws_geo, camera=None, texture_resolution=2048, mode='nada',
+                       **block_kwargs):
+        """
+        mode='thumbnail' : To make thumbnail
+        mode='layer'     : To support layer-freezing
+        mode='nada'      : To support 1 latent - N views rendering
+        """
+        return_generate         = None
+        return_extract_3d_shape = None
+        
+        # -------------------      generate    ------------------- #
+        
+        # (1) Generate 3D mesh first
+        # NOTE :
+        # this code is shared by 'def generate' and 'def extract_3d_mesh'
+        if self.one_3d_generator:
+            sdf_feature, tex_feature = self.generator.get_feature(
+                ws[:, :self.generator.tri_plane_synthesis.num_ws_tex],
+                ws_geo[:, :self.generator.tri_plane_synthesis.num_ws_geo])
+            ws = ws[:, self.generator.tri_plane_synthesis.num_ws_tex:]
+            ws_geo = ws_geo[:, self.generator.tri_plane_synthesis.num_ws_geo:]
+            mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = self.get_geometry_prediction(ws_geo, sdf_feature)
+        else:
+            mesh_v, mesh_f, sdf, deformation, v_deformed, sdf_reg_loss = self.get_geometry_prediction(ws_geo)
+    
+        ws_tex = ws
+        
+        # (2) Generate random camera
+        with torch.no_grad():
+            if camera is None:
+                if mode == "nada":
+                    campos, cam_mv, rotation_angle, elevation_angle, sample_r = self.generate_random_camera(
+                        ws_tex.shape[0], n_views=self.n_views)
+                    gen_camera = (campos, cam_mv, sample_r, rotation_angle, elevation_angle)
+                    run_n_view = self.n_views
+                else:
+                    campos, cam_mv, rotation_angle, elevation_angle, sample_r = self.generate_random_camera(
+                        ws_tex.shape[0], n_views=1)
+                    gen_camera = (campos, cam_mv, sample_r, rotation_angle, elevation_angle)
+                    run_n_view = 1
+            else:
+                if isinstance(camera, tuple):
+                    cam_mv = camera[0]
+                    campos = camera[1]
+                else:
+                    cam_mv = camera
+                    campos = None
+                gen_camera = camera
+                run_n_view = cam_mv.shape[1]
+        
+        # NOTE
+        # tex_pos: Position we want to query the texture field || List[(1,1024, 1024,3) * Batch]
+        # tex_hard_mask = 2D silhoueete of the rendered image  || Tensor(Batch, 1024, 1024, 1)
+        
+        if mode == 'nada':
+            
+            antilias_mask = []
+            tex_pos = []
+            tex_hard_mask = []
+            return_value = {'tex_pos':[]}
+
+            for idx in range(self.n_views):
+                cam = cam_mv[:, idx, : , :].unsqueeze(1)
+                antilias_mask_, hard_mask_, return_value_ = self.render_mesh(mesh_v, mesh_f, cam)
+                # print("DEBUG : ", torch.cuda.memory_reserved(0), torch.cuda.memory_allocated(0))
+                antilias_mask.append(antilias_mask_)
+                tex_hard_mask.append(hard_mask_)
+
+                for pos in return_value_['tex_pos']:
+                    return_value['tex_pos'].append(pos)
+                mask_pyramid = None
+
+                # print("DEBUG : GPU : ", idx, round(torch.cuda.memory_reserved(0) / 1e9, 4), round(torch.cuda.memory_allocated(0) / 1e9, 4))
+
+            antilias_mask = torch.cat(antilias_mask, dim=0)         # (B*n_view, 1024, 1024, 1)
+            tex_hard_mask = torch.cat(tex_hard_mask, dim=0)         # (B*n_view, 1024, 1024, 3)
+            tex_pos = return_value['tex_pos']
+
+            ws_tex = ws_tex.repeat(self.n_views, 1, 1)
+            ws_geo = ws_geo.repeat(self.n_views, 1, 1)
+            tex_feature = tex_feature.repeat(self.n_views, 1, 1, 1)
+
+        else:
+            # (3) Render the mesh into 2D image (get 3d position of each image plane)
+            antilias_mask, hard_mask, return_value = self.render_mesh(mesh_v, mesh_f, cam_mv)
+            
+            mask_pyramid = None
+
+            tex_pos = return_value['tex_pos']
+            tex_hard_mask = hard_mask
+
+            tex_pos = [torch.cat([pos[i_view:i_view + 1] for i_view in range(run_n_view)], dim=2) for pos in tex_pos]
+            tex_hard_mask = torch.cat(
+                [torch.cat(
+                    [tex_hard_mask[i * run_n_view + i_view: i * run_n_view + i_view + 1]
+                    for i_view in range(run_n_view)], dim=2)
+                    for i in range(ws_tex.shape[0])], dim=0)
+
+        # (4) Querying the texture field to predict the texture feature for each pixel on the image
+        if self.one_3d_generator:
+            # print("DEBUG : Texture plane : ", ws_tex.shape, len(tex_pos), ws_geo.shape, tex_hard_mask.shape, tex_feature.shape)
+            tex_feat = self.get_texture_prediction(
+                ws_tex, tex_pos, ws_geo.detach(), tex_hard_mask,
+                tex_feature)
+        else:
+            tex_feat = self.get_texture_prediction(
+                ws_tex, tex_pos, ws_geo.detach(), tex_hard_mask)
+        background_feature = torch.zeros_like(tex_feat)
+
+        # (5) Merge them together
+        img_feat = tex_feat * tex_hard_mask + background_feature * (1 - tex_hard_mask)
+        
+        # print('(5) : ' ,img_feat.shape)
+        # NOTE : debug -> no need to execute (6)
+        # (6) We should split it back to the original image shape
+        # img_feat = torch.cat(
+        #     [torch.cat(
+        #         [img_feat[i:i + 1, :, self.img_resolution * i_view: self.img_resolution * (i_view + 1)]
+        #         for i_view in range(run_n_view)], dim=0) for i in range(len(return_value['tex_pos']))], dim=0)
+        # print('(6) : ', img_feat.shape)
+        # print('5,6 : ', torch.sum(prev_img_feat - img_feat))
+
+        ws_list = [ws_tex[i].unsqueeze(dim=0).expand(return_value['tex_pos'][i].shape[0], -1, -1) for i in
+                range(len(return_value['tex_pos']))]
+        ws = torch.cat(ws_list, dim=0).contiguous()
+
+        # (7) Predict the RGB color for each pixel (self.to_rgb is 1x1 convolution)
+        if self.feat_channel > 3:
+            network_out = self.to_rgb(img_feat.permute(0, 3, 1, 2), ws[:, -1])
+        else:
+            network_out = img_feat.permute(0, 3, 1, 2)
+
+        # print("DEBUG : GPU : get3d", mode, round(torch.cuda.memory_reserved(0) / 1e9, 4), round(torch.cuda.memory_allocated(0) / 1e9, 4))
+
+        img = network_out
+        img_buffers_viz = None
+
+        if self.render_type == 'neural_render':
+            img = img[:, :3]
+        else:
+            raise NotImplementedError
+
+        # print('before concat img : ', img.shape) - (1, 3, 1024 ,1024)
+        img = torch.cat([img, antilias_mask.permute(0, 3, 1, 2)], dim=1)
+        
+        return_generate = [img, antilias_mask]
+
+        if mode == 'layer' or mode == 'nada':
+            return return_generate[0], None
+
+        elif mode == 'thumbnail':
+            # ------------------- extract_3d_shape ------------------- #
+            
+            del tex_hard_mask
+            del tex_feat
+            
+            # (8) Use x-atlas to get uv mapping for the mesh
+            from training_TAPS3D.extract_texture_map import xatlas_uvmap
+            all_uvs = []
+            all_mesh_tex_idx = []
+            all_gb_pose = []
+            all_uv_mask = []
+            if self.dmtet_geometry.renderer.ctx is None:
+                self.dmtet_geometry.renderer.ctx = dr.RasterizeGLContext(device=self.device)
+            for v, f in zip(mesh_v, mesh_f):
+                uvs, mesh_tex_idx, gb_pos, mask = xatlas_uvmap(
+                    self.dmtet_geometry.renderer.ctx, v, f, resolution=texture_resolution)
+                all_uvs.append(uvs)
+                all_mesh_tex_idx.append(mesh_tex_idx)
+                all_gb_pose.append(gb_pos)
+                all_uv_mask.append(mask)
+            
+            tex_hard_mask = torch.cat(all_uv_mask, dim=0).float()
+
+            # (9) Query the texture field to get the RGB color for texture map
+            all_network_output = []
+            for _ws, _all_gb_pose, _ws_geo, _tex_hard_mask in zip(ws, all_gb_pose, ws_geo, tex_hard_mask):
+                if self.one_3d_generator:
+                    tex_feat = self.get_texture_prediction(
+                        _ws.unsqueeze(dim=0), [_all_gb_pose],
+                        _ws_geo.unsqueeze(dim=0).detach(),
+                        _tex_hard_mask.unsqueeze(dim=0),
+                        tex_feature)
+                else:
+                    tex_feat = self.get_texture_prediction(
+                        _ws.unsqueeze(dim=0), [_all_gb_pose],
+                        _ws_geo.unsqueeze(dim=0).detach(),
+                        _tex_hard_mask.unsqueeze(dim=0))
+                background_feature = torch.zeros_like(tex_feat)
+                # Merge them together
+                img_feat = tex_feat * _tex_hard_mask.unsqueeze(dim=0) + background_feature * (
+                        1 - _tex_hard_mask.unsqueeze(dim=0))
+                network_out = self.to_rgb(img_feat.permute(0, 3, 1, 2), _ws.unsqueeze(dim=0)[:, -1])
+                all_network_output.append(network_out)
+            network_out = torch.cat(all_network_output, dim=0)
+            
+            return_extract_3d_mesh = [mesh_v, mesh_f, all_uvs, all_mesh_tex_idx, network_out]
+            
+            return return_generate, return_extract_3d_mesh
+        
+        else:
+            raise NotImplementedError()
 
     def generate_rotate_camera_list(self, n_batch=1):
         '''
@@ -428,6 +752,10 @@ class DMTETSynthesisNetwork(torch.nn.Module):
         camera_r = torch.zeros(n_camera, 1, device=self.device) + camera_radius
         camera_phi = torch.zeros(n_camera, 1, device=self.device) + (90.0 - 15.0) / 90.0 * 0.5 * math.pi
         camera_theta = torch.range(0, n_camera - 1, device=self.device).unsqueeze(dim=-1) / n_camera * math.pi * 2.0
+        # NOTE only for debug
+        camera_theta = torch.zeros(n_camera, 1, device=self.device) + 60 / 180 * math.pi
+
+        # ----------------- 
         camera_theta = -camera_theta
         world2cam_matrix, camera_origin, _, _, _ = create_camera_from_angle(
             camera_phi, camera_theta, camera_r, device=self.device)
@@ -441,7 +769,7 @@ class DMTETSynthesisNetwork(torch.nn.Module):
         `ws_geo` for geometry generation. It first generate 3D mesh, then render it into 2D image
         with given `camera` or sampled from a prior distribution of camera.
         :param ws_tex: latent code for texture
-        :param camera: camera to render generated 3D shape
+        :param camera: camera to render generated 3D shape - MINSU) Bx2 shape
         :param ws_geo: latent code for geometry
         :param block_kwargs:
         :return:
@@ -470,11 +798,17 @@ class DMTETSynthesisNetwork(torch.nn.Module):
                     cam_mv = camera[0]
                     campos = camera[1]
                 else:
-                    cam_mv = camera
-                    campos = None
-                gen_camera = camera
-                run_n_view = cam_mv.shape[1]
+                    # print("DEBUG : camera input : ", camera.shape)
+                    if camera.shape[2:] == (4, 4):
+                        cam_mv = camera
+                        campos = None
+                        gen_camera = camera
+                    else:
+                    # camera[0] = rotation?
+                    # camera[1] = elevation?
+                        cam_mv, campos, gen_camera = self.generate_cam_from_angle(camera)
 
+                    run_n_view = self.n_views
         # Render the mesh into 2D image (get 3d position of each image plane)
         antilias_mask, hard_mask, return_value = self.render_mesh(mesh_v, mesh_f, cam_mv)
 
@@ -570,6 +904,7 @@ class GeneratorDMTETMesh(torch.nn.Module):
             self.num_ws = self.synthesis.geometry_synthesis_tex.num_ws_all
             self.num_ws_geo = self.synthesis.geometry_synthesis_sdf.num_ws_all
 
+        print("networks_TAPS3D init : ", z_dim, c_dim)
         self.mapping = MappingNetwork(
             z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws,
             device=self.synthesis.device, **mapping_kwargs)
@@ -663,7 +998,47 @@ class GeneratorDMTETMesh(torch.nn.Module):
         all_mesh = self.synthesis.extract_3d_shape(ws, ws_geo, )
 
         return all_mesh
+    ###############################################정빈###########################################
+    def generate_3d_mesh_for_inferencetime_measure(
+            self, geo_z, tex_z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False,
+            with_texture=True, use_style_mixing=False, use_mapping=True, **synthesis_kwargs):
+        '''
+        This function generates a 3D mesh with given geometry latent code (geo_z) and texture
+        latent code (tex_z), it can also generate a texture map is setting `with_texture` to be True.
+        :param geo_z: lantent code for geometry
+        :param tex_z: latent code for texture
+        :param c: None is default
+        :param truncation_psi: the trucation for the latent code
+        :param truncation_cutoff: Where to cut the truncation
+        :param update_emas: False is default
+        :param with_texture: Whether generating texture map along with the 3D mesh
+        :param use_style_mixing: Whether use style mixing for generation
+        :param use_mapping: Whether we need to use mapping network to map the latent code
+        :param synthesis_kwargs:
+        :return:
+        '''
+        #if not with_texture: 다 texture 측정 할꺼임
+        #####mapping time measure###########
+        starter_mapping = torch.cuda.Event(enable_timing=True)
+        ender_mapping = torch.cuda.Event(enable_timing=True)
+        starter_mapping.record()
+        if use_mapping:
+            ws = self.mapping(
+                tex_z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
+            ws_geo = self.mapping_geo(
+                geo_z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff,
+                update_emas=update_emas)
+        ender_mapping.record()
+        torch.cuda.synchronize()
+        mapping_time = starter_mapping.elapsed_time(ender_mapping)
+        ####################################
+        #if use_style_mixing: style mixing 다 안씀
+        
+        triplane_gen_time,DMTet_time,x_atlas_time, tex_prediction_time = self.synthesis.extract_3d_shape_for_inferencetime_measure(ws, ws_geo, )
 
+        return mapping_time,triplane_gen_time,DMTet_time,x_atlas_time, tex_prediction_time
+    ########################################################################################
+    
     def generate_3d(
             self, z, geo_z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, camera=None,
             generate_no_light=False,
@@ -735,3 +1110,182 @@ class GeneratorDMTETMesh(torch.nn.Module):
             ws_geo=ws_geo,
         )
         return img
+
+    # ------------------------ MINSU ------------------------ #
+
+    # ------------------------ work for thumbnail generation
+    def generate_custom(
+        self, geo_z, tex_z, c=0, truncation_psi=1, truncation_cutoff=None, 
+        update_emas=False, use_mapping=False,                             # -> generate_3d_mesh
+        camera=None,                                                    # -> generate_3d
+        # generate_no_light=False,                                        -> no use , actually
+        mode='thumbnail',
+        **synthesis_kwargs):
+        
+        """
+        Description
+        mode='thumbnail' : To make thumbnail
+        mode='layer'     : To support layer-freezing
+        mode='nada'      : To support 1 latent - N views rendering
+        
+        Note :
+        we don't take below as input args
+            1. use_style_mixing
+            2. generate_no_light
+            3. with_texture
+            , since they are redundant.
+            
+        Return :
+            return_generate_3d = [rendered RGB Image, rendered 2D Silhouette image]
+            return_generate_3d_mesh = [mesh_v, mesh_f, all_uvs, all_mesh_tex_idx, texture map]
+        """
+        
+        if use_mapping or mode == 'thumbnail':
+            # print("DEBUG  : mapping network O")
+            ws = self.mapping(
+                tex_z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, 
+                update_emas=update_emas)
+            ws_geo = self.mapping_geo(
+                geo_z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff,
+                update_emas=update_emas)
+        else:
+            # print("DEBUG  : mapping network X")
+            ws = tex_z
+            ws_geo = geo_z
+        
+        # print(ws.shape, ws_geo.shape)
+
+        return_generate_3d, return_generate_3d_mesh = self.synthesis.generate_custom(
+            ws, ws_geo, camera=camera, mode=mode, **synthesis_kwargs) # custom inference code.
+        
+        return return_generate_3d, return_generate_3d_mesh
+    
+    # ------------------------ work for GET3D + NADA
+    # def forward_nada(
+    #         self, ws_tex, ws_geo, truncation_psi=1, truncation_cutoff=None, update_emas=False, use_style_mixing=False,
+    #         **synthesis_kwargs):
+    #     '''
+    #     Almost same as forward function, but some minor changes for NADA
+    #     1. change self.synthesis forward function
+    #     2. skip mapping network forwading
+    #     This function is only used at 'nada.py - def determine_opt_layers'
+    #     '''
+
+    #     ws = ws_tex
+    #     ws_geo = ws_geo
+
+    #     img, sdf, syn_camera, deformation, v_deformed, mesh_v, mesh_f, mask_pyramid, _, _ = self.synthesis.generate_custom(
+    #         ws=ws, update_emas=update_emas,
+    #         return_shape=True,
+    #         ws_geo=ws_geo,
+    #         mode='layer'
+    #     )
+    #     return img
+
+    def get_all_generator_layers_dict(self):
+
+        layer_idx_geo = {}
+        layer_idx_tex = {}
+
+        generator = self.synthesis.generator
+        tri_plane_blocks = generator.tri_plane_synthesis.children()
+
+        idx_geo = 0
+        idx_tex = 0
+
+        # triplane
+        for block in tri_plane_blocks:
+            if hasattr(block, 'conv0'):
+                layer_idx_geo[idx_geo] = f'b{block.resolution}.conv0'
+                idx_geo += 1
+            if hasattr(block, 'conv1'):
+                layer_idx_geo[idx_geo] = f'b{block.resolution}.conv1'
+                idx_geo += 1
+            if hasattr(block, 'togeo'):
+                layer_idx_geo[idx_geo] = f'b{block.resolution}.togeo'
+                idx_geo += 1
+            if hasattr(block, 'totex'):
+                layer_idx_tex[idx_tex] = f'b{block.resolution}.totex'
+                idx_tex += 1
+        
+        # mlp_synthesis
+        # note that last number = ModuleList index
+        layer_idx_tex[idx_tex] = 'mlp_synthesis_tex.0'
+        idx_tex += 1
+        layer_idx_tex[idx_tex] = 'mlp_synthesis_tex.1'
+
+        layer_idx_geo[idx_geo] = 'mlp_synthesis_geo.0'
+        idx_geo += 1
+        layer_idx_geo[idx_geo] = 'mlp_synthesis_geo.1'
+
+        return layer_idx_tex, layer_idx_geo
+
+    def freeze_generator_layers(self, layer_tex_dict=None, layer_geo_dict=None):
+
+        if layer_geo_dict is None and layer_tex_dict is None:
+            # all freeze
+            requires_grad(self.synthesis, False)
+            # ------ debug ------
+            # for name, param in self.synthesis.generator.tri_plane_synthesis.named_parameters():
+            #     if not param.requires_grad:
+            #         print(name, param.requires_grad)
+
+        else:
+            raise NotImplementedError()
+
+    def unfreeze_generator_layers(self, topk_idx_tex: list, topk_idx_geo: list):
+        """
+        args
+            topk_idx_tex : chosen layers - geo
+            topk_idx_geo : chosen layers - tex
+            layer_geo_dict , layer_tex_dict : result of get_all_generator_layers()
+        """
+        if not topk_idx_tex and not topk_idx_geo:
+            requires_grad(self.synthesis.generator.tri_plane_synthesis, True)
+            return  # all unfreeze
+
+        layer_tex_dict, layer_geo_dict = self.get_all_generator_layers_dict()
+
+        for idx_tex in topk_idx_tex:
+            if idx_tex >= 7:
+                # mlp_synthesis_tex
+                mlp_name, layer_idx = layer_tex_dict[idx_tex].split('.')
+                layer_tex = getattr(self.synthesis.generator.mlp_synthesis_tex, 'layers')[int(layer_idx)]
+                requires_grad(layer_tex, True)
+                self.synthesis.generator.mlp_synthesis_tex.layers[int(layer_idx)] = layer_tex
+
+            else:
+                # Texture TriPlane
+                block_name, layer_name = layer_tex_dict[idx_tex].split('.')
+                block = getattr(self.synthesis.generator.tri_plane_synthesis, block_name)
+                requires_grad(getattr(block, layer_name), True)
+                setattr(self.synthesis.generator.tri_plane_synthesis, block_name, block)
+
+        for idx_geo in topk_idx_geo:
+            if idx_geo >= 20:           
+                # mlp_synthesis_sdf
+                mlp_name, layer_idx = layer_geo_dict[idx_geo].split('.')
+                layer_sdf = getattr(self.synthesis.generator.mlp_synthesis_sdf, 'layers')[int(layer_idx)]
+                requires_grad(layer_sdf, True)
+                self.synthesis.generator.mlp_synthesis_sdf.layers[int(layer_idx)] = layer_sdf
+                # mlp_synthesis_def
+                layer_def = getattr(self.synthesis.generator.mlp_synthesis_def, 'layers')[int(layer_idx)]
+                requires_grad(layer_def, True)
+                self.synthesis.generator.mlp_synthesis_def.layers[int(layer_idx)] = layer_def
+
+            else:                       
+                # Geometry TriPlane
+                block_name, layer_name = layer_geo_dict[idx_geo].split('.')
+                block = getattr(self.synthesis.generator.tri_plane_synthesis, block_name)
+                requires_grad(getattr(block, layer_name), True)
+                setattr(self.synthesis.generator.tri_plane_synthesis, block_name, block)
+
+        # ------ debug ------
+        # for name, param in self.synthesis.generator.tri_plane_synthesis.named_parameters():
+        #     print(name, param.requires_grad)
+
+
+# MINSU : from NADA ) ZSSGAN/models/ZSSGAN.py
+def requires_grad(model: torch.nn.Module, flag: bool = True):
+    model.requires_grad_(flag)
+    # print(model.parameters())

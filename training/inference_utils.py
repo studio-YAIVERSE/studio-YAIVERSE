@@ -16,6 +16,7 @@ from training.utils.utils_3d import save_obj, savemeshtes2
 import imageio
 import cv2
 from tqdm import tqdm
+import clip
 
 
 def save_image_grid(img, fname, drange, grid_size):
@@ -167,7 +168,7 @@ def save_visualization(
     :return:
     '''
     with torch.no_grad():
-        G_ema.update_w_avg()
+        # G_ema.update_w_avg()
         camera_list = G_ema.synthesis.generate_rotate_camera_list(n_batch=grid_z[0].shape[0])
         camera_img_list = []
         if not save_all:
@@ -263,7 +264,6 @@ def save_textured_mesh_for_inference(
                     os.path.join(mesh_dir, '%07d.png' % (save_mesh_idx)))
                 save_mesh_idx += 1
 
-
 def save_geo_for_inference(G_ema, run_dir):
     '''
     Generate the 3D objs (without texture) for generation
@@ -300,3 +300,250 @@ def save_geo_for_inference(G_ema, run_dir):
                 points = normalize_and_sample_points(mesh_v, mesh_f, kal, n_sample=2048, normalized_scale=1.0)
                 np.savez(os.path.join(surface_point_dir, '%07d.npz' % (i_mesh)), pcd=points.data.cpu().numpy())
                 i_mesh += 1
+
+                
+#################################### by 정빈 ########################################
+def meanvar(ls):
+    mean = sum(ls)/len(ls)
+    var = sum((i - mean) ** 2 for i in ls) / len(ls)
+    print("mean : ", mean)
+    print("var :", var)
+    return
+
+def test_time_textured_mesh_for_inferencetime_measure(
+        G_ema,device, z_dim,c_to_compute_w_avg=None):
+    '''
+    function to test the time for inferencing texture mesh - by 정빈
+    '''
+    #the default value for n_shape is 25. To test inference time we evaluate 200
+    # grid_z = torch.randn([200, z_dim], device=device).split(1)  # random code for geometry
+    # grid_tex_z = torch.randn([200, z_dim], device=device).split(1)  # random code for texture
+    # grid_c = torch.ones(200, device=device).split(1)
+    #하나로만 계속
+    geo_z = torch.randn([1, z_dim],device=device)
+    tex_z = torch.randn([1, z_dim],device =device)
+    
+    time_list = []
+    mapping_time_list = []
+    triplane_gen_time_list = []
+    DMTet_time_list = []
+    x_atlas_time_list = []
+    tex_prediction_time_list = []
+    # set starter, ender
+    starter = torch.cuda.Event(enable_timing=True)
+    ender = torch.cuda.Event(enable_timing=True)
+    print("G_ema.device",G_ema.device)
+    with torch.no_grad():
+        G_ema.update_w_avg(c_to_compute_w_avg)
+        print(G_ema.device)
+        # print("len(grid_z)",len(grid_z))
+        print("torch.cuda.bechmark",torch.backends.cudnn.benchmark)
+        # for idx in range(len(grid_z)):
+        for idx in range(200):
+            print("-----------------idx: ", idx,"------------------------")
+            # geo_z = grid_z[idx]
+            # tex_z = grid_tex_z[idx]
+            # start
+            starter.record()
+            mapping_time, triplane_gen_time, DMTet_time,x_atlas_time, tex_prediction_time = G_ema.generate_3d_mesh_for_inferencetime_measure(
+                geo_z=geo_z, tex_z=tex_z, c=None, truncation_psi=0.7,
+                use_style_mixing=False)
+            # end
+            ender.record()
+            
+            torch.cuda.synchronize()
+            curr_time = starter.elapsed_time(ender)
+            time_list.append(curr_time)
+            mapping_time_list.append(mapping_time)
+            triplane_gen_time_list.append(triplane_gen_time)
+            DMTet_time_list.append(DMTet_time)
+            x_atlas_time_list.append(x_atlas_time)
+            tex_prediction_time_list.append(tex_prediction_time)
+            
+            
+            print("time for mapping :", round(mapping_time,4))
+            print("time for triplane_gen :", round(triplane_gen_time,4))
+            print("time for DMTet :", round(DMTet_time,4))
+            print("time for x-atlas :", round(x_atlas_time,4))
+            print("time for tex_prediction :", round(tex_prediction_time,4))
+            print("sum of all the above (should be simmilar to whole inference): ",
+                  round(mapping_time+triplane_gen_time+DMTet_time+x_atlas_time+tex_prediction_time,4))
+            print("time for whole inference:", round(curr_time,4))
+            
+    print("test_time_textured_mesh_for_inference complete!!")
+    
+    mean = sum(time_list)/len(time_list)
+    print(f"mean inference time for all = {mean}")
+    print(f"Variance of inference time for all = {sum((i - mean) ** 2 for i in time_list) / len(time_list)}")
+    print("mapping time--------------------")
+    meanvar(mapping_time_list)
+    print("triplane_gen_time---------------")
+    meanvar(triplane_gen_time_list)
+    print("DMTet_time----------------------")
+    meanvar(DMTet_time_list)
+
+    print("x_atlas_time--------------------")
+    meanvar(x_atlas_time_list)
+    print("tex_prediction_time-------------")
+    meanvar(tex_prediction_time_list)
+
+    print("--------------------------------")
+    
+    print("if warm up is needed calculate excluding first 50")
+    mean_exclude_50 = sum(time_list[50:])/len(time_list[50:])
+    print(f"mean inference time excluding first 50 = {mean_exclude_50}")
+    print(f"Variance of inference time excluding first 50 = \
+        {sum((i - mean_exclude_50) ** 2 for i in time_list[50:]) / len(time_list[50:])}")
+    print("mapping time--------------------")
+    meanvar(mapping_time_list[50:])
+    print("triplane_gen_time---------------")
+    meanvar(triplane_gen_time_list[50:])
+    print("DMTet_time----------------------")
+    meanvar(DMTet_time_list[50:])
+
+    print("x_atlas_time--------------------")
+    meanvar(x_atlas_time_list[50:])
+    print("tex_prediction_time-------------")
+    meanvar(tex_prediction_time_list[50:])
+    print("--------------------------------")
+
+#####################################################################################
+
+
+# ------------------------ MINSU ------------------------ #
+def save_render_n_textured_mesh_for_inference(
+        G_ema, grid_z, grid_c, run_dir, save_mesh_dir=None,
+        c_to_compute_w_avg=None, grid_tex_z=None, use_style_mixing=False
+):
+    with torch.no_grad():
+        # /G_ema.update_w_avg(c_to_compute_w_avg)
+        # TODO : camera - should be fixed at top-right (30) angle.
+        camera = G_ema.synthesis.generate_rotate_camera_list(n_batch=1)
+        save_mesh_idx=0
+        mesh_dir = os.path.join(run_dir, save_mesh_dir)
+        os.makedirs(mesh_dir, exist_ok=True)
+        
+        grid_size = (1, 1)
+        
+        for idx in tqdm(range(len(grid_z))):
+            geo_z = grid_z[idx]
+            images_list = []
+            if grid_tex_z is None:
+                tex_z = grid_z[idx]
+            else:
+                tex_z = grid_tex_z[idx]
+            c = grid_c[idx]
+
+            return_generate_3d, return_generate_3d_mesh = G_ema.generate_custom(
+                tex_z=tex_z, geo_z=geo_z, c=c, noise_mode='const',
+                generate_no_light=True, truncation_psi=0.7, camera=camera[5])
+            
+            # from save_visualization()
+            img = return_generate_3d[0]
+            rgb_img = img[:, :3]
+            # save_img = torch.cat([rgb_img, mask.permute(0, 3, 1, 2).expand(-1, 3, -1, -1)], dim=-1).detach() 
+            save_img = rgb_img.detach()      # only save RGB image for thumbnail
+            images_list.append(save_img.cpu().numpy())
+            # images = np.concatenate(images_list, axis=0)
+            images = images_list[0]
+            img = save_image_grid(
+                    images, os.path.join(
+                        mesh_dir,
+                        '%07d_thumbnail.png' % (save_mesh_idx)),
+                    drange=[-1, 1], grid_size=grid_size)
+            
+            # from save_textured_mesh_for_instance()
+            generated_mesh = return_generate_3d_mesh
+            for mesh_v, mesh_f, all_uvs, all_mesh_tex_idx, tex_map in zip(*generated_mesh):
+                savemeshtes2(
+                    mesh_v.data.cpu().numpy(),
+                    all_uvs.data.cpu().numpy(),
+                    mesh_f.data.cpu().numpy(),
+                    all_mesh_tex_idx.data.cpu().numpy(),
+                    os.path.join(mesh_dir, '%07d.obj' % (save_mesh_idx))
+                )
+                lo, hi = (-1, 1)
+                img = np.asarray(tex_map.permute(1, 2, 0).data.cpu().numpy(), dtype=np.float32)
+                img = (img - lo) * (255 / (hi - lo))
+                img = img.clip(0, 255)
+                mask = np.sum(img.astype(np.float), axis=-1, keepdims=True)
+                mask = (mask <= 3.0).astype(np.float)
+                kernel = np.ones((3, 3), 'uint8')
+                dilate_img = cv2.dilate(img, kernel, iterations=1)
+                img = img * (1 - mask) + dilate_img * mask
+                img = img.clip(0, 255).astype(np.uint8)
+                PIL.Image.fromarray(np.ascontiguousarray(img[::-1, :, :]), 'RGB').save(
+                    os.path.join(mesh_dir, '%07d.png' % (save_mesh_idx)))
+                save_mesh_idx += 1
+
+# 0512
+def save_render_from_text(
+        G_ema, grid_z, grid_c, run_dir, save_mesh_dir=None,
+        c_to_compute_w_avg=None, grid_tex_z=None, use_style_mixing=False,
+        text='', clip_path=''
+):
+    with torch.no_grad():
+        camera = G_ema.synthesis.generate_rotate_camera_list(n_batch=1)
+        device = G_ema.device
+        save_mesh_idx=0
+        mesh_dir = os.path.join(run_dir, save_mesh_dir)
+        os.makedirs(mesh_dir, exist_ok=True)
+        
+        grid_size = (1, 1)
+
+        model, _ = clip.load('./clip-vit-b-16.pt' if clip_path == '' else clip_path, device=device)
+        print("DEBUG : text : ", text)
+        text_tokens = clip.tokenize([text]).to(device)
+        text_embedding = model.encode_text(text_tokens)
+
+        for idx in tqdm(range(grid_size[0] * grid_size[1])):
+            geo_z = grid_z[idx]
+            images_list = []
+            if grid_tex_z is None:
+                tex_z = grid_z[idx]
+            else:
+                tex_z = grid_tex_z[idx]
+            
+            c = text_embedding.reshape(1, 512)  # enforce shape 
+
+            return_generate_3d, return_generate_3d_mesh = G_ema.generate_custom(
+                tex_z=tex_z, geo_z=geo_z, c=c, noise_mode='const',
+                generate_no_light=True, truncation_psi=0.7, camera=camera[5])
+            
+            # from save_visualization()
+            img = return_generate_3d[0]
+            rgb_img = img[:, :3]
+            # save_img = torch.cat([rgb_img, mask.permute(0, 3, 1, 2).expand(-1, 3, -1, -1)], dim=-1).detach() 
+            save_img = rgb_img.detach()      # only save RGB image for thumbnail
+            images_list.append(save_img.cpu().numpy())
+            # images = np.concatenate(images_list, axis=0)
+            images = images_list[0]
+            img = save_image_grid(
+                    images, os.path.join(
+                        mesh_dir,
+                        '%07d_thumbnail.png' % (save_mesh_idx)),
+                    drange=[-1, 1], grid_size=grid_size)
+            
+            # from save_textured_mesh_for_instance()
+            generated_mesh = return_generate_3d_mesh
+            for mesh_v, mesh_f, all_uvs, all_mesh_tex_idx, tex_map in zip(*generated_mesh):
+                savemeshtes2(
+                    mesh_v.data.cpu().numpy(),
+                    all_uvs.data.cpu().numpy(),
+                    mesh_f.data.cpu().numpy(),
+                    all_mesh_tex_idx.data.cpu().numpy(),
+                    os.path.join(mesh_dir, '%07d.obj' % (save_mesh_idx))
+                )
+                lo, hi = (-1, 1)
+                img = np.asarray(tex_map.permute(1, 2, 0).data.cpu().numpy(), dtype=np.float32)
+                img = (img - lo) * (255 / (hi - lo))
+                img = img.clip(0, 255)
+                mask = np.sum(img.astype(np.float), axis=-1, keepdims=True)
+                mask = (mask <= 3.0).astype(np.float)
+                kernel = np.ones((3, 3), 'uint8')
+                dilate_img = cv2.dilate(img, kernel, iterations=1)
+                img = img * (1 - mask) + dilate_img * mask
+                img = img.clip(0, 255).astype(np.uint8)
+                PIL.Image.fromarray(np.ascontiguousarray(img[::-1, :, :]), 'RGB').save(
+                    os.path.join(mesh_dir, '%07d.png' % (save_mesh_idx)))
+                save_mesh_idx += 1

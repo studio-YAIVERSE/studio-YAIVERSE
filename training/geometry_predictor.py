@@ -51,7 +51,7 @@ def modulated_fc(
     if x.dtype == torch.float16 and demodulate:
         weight = weight * (1 / np.sqrt(in_channels) / weight.norm(float('inf'), dim=[1, 2, 3], keepdim=True))  # max_Ikk
         styles = styles / styles.norm(float('inf'), dim=1, keepdim=True)  # max_I
-
+    
     # Calculate per-sample weights and demodulation coefficients.
     w = weight.unsqueeze(0)  # [NOI]
     w = w * styles.unsqueeze(dim=1)  # [NOI]
@@ -1176,7 +1176,7 @@ class SynthesisNetworkTexGeo(torch.nn.Module):
     def extra_repr(self):
         return ' '.join(
             [
-                f'w_dim={self.w_dim:d}, num_ws={self.num_ws:d},',
+                f'w_dim={self.w_dim:d}, num_ws_tex={self.num_ws_tex:d}, num_ws_geo={self.num_ws_geo:d},',
                 f'img_resolution={self.img_resolution:d}, img_channels={self.img_channels:d},',
                 f'num_fp16_res={self.num_fp16_res:d}'])
 

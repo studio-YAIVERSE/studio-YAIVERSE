@@ -21,8 +21,9 @@ from torch_utils.ops import grid_sample_gradfix
 from metrics import metric_main
 import nvdiffrast.torch as dr
 import time
-from training.inference_utils import save_image_grid, save_visualization
-
+from training.inference_utils import save_image_grid, save_visualization,save_textured_mesh_for_inference
+from training.loss_TAPS3D import TAPS3D_loss
+from training.geometry_predictor import FullyConnectedLayer
 
 # ----------------------------------------------------------------------------
 # Function to save the real image for discriminator training
@@ -61,11 +62,15 @@ def setup_snapshot_image_grid(training_set, random_seed=0, inference=False):
             indices = label_groups[label]
             grid_indices += [indices[x % len(indices)] for x in range(gw)]
             label_groups[label] = [indices[(i + gw) % len(indices)] for i in range(len(indices))]
-
     # Load data.
-    images, labels, masks = zip(*[training_set[i][:3] for i in grid_indices])
-    return (gw, gh), np.stack(images), np.stack(labels), masks
-
+    
+    if training_set.version == 'TAPS3D':
+        images, labels, masks, caption_features = zip(*[training_set[i][:4] for i in grid_indices])
+        captions = [training_set.get_caption(i) for i in grid_indices]
+        return (gw, gh), np.stack(images), np.stack(labels), masks, caption_features, captions
+    else:
+        images, labels, masks = zip(*[training_set[i][:3] for i in grid_indices])
+        return (gw, gh), np.stack(images), np.stack(labels), masks
 
 def clean_training_set_kwargs_for_metrics(training_set_kwargs):
     # We use this function to remove or change custom kwargs for dataset
@@ -106,6 +111,7 @@ def training_loop(
         inference_vis=False,  # Whether running inference or not.
         detect_anomaly=False,
         resume_pretrain=None,
+        taps3d=False
 ):
     from torch_utils.ops import upfirdn2d
     from torch_utils.ops import bias_act
@@ -149,62 +155,136 @@ def training_loop(
         print('Constructing networks...')
 
     # Constructing networks
-    common_kwargs = dict(
-        c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
+    # NOTE : TAPS3D -> no use of discriminator
+    if taps3d:  # TAPS3D
+        common_kwargs = dict(
+            c_dim=512, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
+    else:       # GET3D 
+        common_kwargs = dict(
+            c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
+        D_kwargs['device'] = device
     G_kwargs['device'] = device
-    D_kwargs['device'] = device
 
     if num_gpus > 1:
         torch.distributed.barrier()
+
     G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(
         device)  # subclass of torch.nn.Module
-    D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(
-        device)  # subclass of torch.nn.Module
+    D = None
+    if not taps3d:
+        D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(
+        device)
     G_ema = copy.deepcopy(G).eval()  # deepcopy can make sure they are correct.
+    optim_state_dict = None
+    # TODO : resume from pretrained TAPS3D
     if resume_pretrain is not None and (rank == 0):
         # We're not reusing the loading function from stylegan3 codebase,
         # since we have some variables that are not picklable.
+        if taps3d:
+            print("change to GET3D model to get weights from pretrained GET3D")
+            G.mapping_geo.fc0 = FullyConnectedLayer(in_features=512, out_features=512, activation='lrelu')
+            G.mapping.fc0 = FullyConnectedLayer(in_features=512 ,out_features=512, activation='lrelu')
+            G_ema.mapping_geo = copy.deepcopy(G.mapping_geo)
+            G_ema.mapping = copy.deepcopy(G.mapping)
+    
         print('==> resume from pretrained path %s' % (resume_pretrain))
         model_state_dict = torch.load(resume_pretrain, map_location=device)
-        G.load_state_dict(model_state_dict['G'], strict=True)
-        G_ema.load_state_dict(model_state_dict['G_ema'], strict=True)
-        D.load_state_dict(model_state_dict['D'], strict=True)
+  
+        print("load parameters for G...")
+        pretrained_dict = model_state_dict['G']
+        G_dict = G.state_dict()
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in G_dict}
+        G_dict.update(pretrained_dict)
+        G.load_state_dict(G_dict)
 
+        print("load parameters for G_ema...")
+        pretrained_dict = model_state_dict['G_ema']
+        G_ema_dict = G_ema.state_dict()
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in G_ema_dict}
+        G_ema_dict.update(pretrained_dict)
+        G_ema.load_state_dict(G_ema_dict)
+
+        # For resume training 
+        if 'Optim' in model_state_dict.keys():
+            optim_state_dict = model_state_dict['Optim']
+            
+            print("GET optim state dict")
+
+        if taps3d:
+            print("change 1st layer of mapping network : convert to TAPS3D model")
+            G.mapping_geo.fc0 = FullyConnectedLayer(in_features=1024, out_features=512, activation='lrelu')
+            G.mapping.fc0 = FullyConnectedLayer(in_features=1024 ,out_features=512, activation='lrelu')
+            G_ema.mapping_geo = copy.deepcopy(G.mapping_geo)
+            G_ema.mapping = copy.deepcopy(G.mapping)
+        
+        if not taps3d:
+            D.load_state_dict(model_state_dict['D'], strict=True)
+
+    G = G.requires_grad_(False).train().to(device) 
+    G_ema = G_ema.requires_grad_(False).eval().to(device)
     if rank == 0:
         print('Setting up augmentation...')
 
     # Distribute across GPUs.
     if rank == 0:
         print(f'Distributing across {num_gpus} GPUs...')
-    for module in [G, D, G_ema]:
+    broadast_modules = [G, G_ema, D]
+    if taps3d:
+        broadast_modules.pop()
+    for module in broadast_modules:
         if module is not None and num_gpus > 1:
             for param in misc.params_and_buffers(module):
                 torch.distributed.broadcast(param, src=0)  # Broadcast from GPU 0
 
     if rank == 0:
         print('Setting up training phases...')
-
+        print(loss_kwargs)
     # Constructing loss functins and optimizer
-    loss = dnnlib.util.construct_class_by_name(
-        device=device, G=G, D=D, **loss_kwargs)  # subclass of training.loss.Loss
-    phases = []
+    if taps3d:
+        loss = TAPS3D_loss(device, G, r1_gamma = loss_kwargs['r1_gamma'],
+                        style_mixing_prob = loss_kwargs['style_mixing_prob'],
+                        pl_weight = loss_kwargs['pl_weight'],
+                        gamma_mask = loss_kwargs['gamma_mask'],
+                        load=[loss_kwargs['clip_vit16'], loss_kwargs['clip_vit32']],
+                        vis_count=0 if rank == 0 else -1)
+    else:
+        loss = dnnlib.util.construct_class_by_name(
+            device=device, G=G, D=D, **loss_kwargs)  # subclass of training.loss.Loss
 
-    for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval),
-                                                   ('D', D, D_opt_kwargs, D_reg_interval)]:
-        if reg_interval is None:
+    #--------------training phase code------------------------------#
+    phases = []
+    if taps3d:
+        for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval)]:
             opt = dnnlib.util.construct_class_by_name(
-                params=module.parameters(), **opt_kwargs)  # subclass of torch.optim.Optimizer
-            phases += [dnnlib.EasyDict(name=name + 'both', module=module, opt=opt, interval=1)]
-        else:  # Lazy regularization.
-            mb_ratio = reg_interval / (reg_interval + 1)
-            opt_kwargs = dnnlib.EasyDict(opt_kwargs)
-            opt_kwargs.lr = opt_kwargs.lr * mb_ratio
-            opt_kwargs.betas = [beta ** mb_ratio for beta in opt_kwargs.betas]
-            opt = dnnlib.util.construct_class_by_name(
-                module.parameters(),
-                **opt_kwargs)  # subclass of torch.optim.Optimizer
+                params=[{'params': module.mapping.parameters(), 'lr':0.0005},
+                        {'params': module.mapping_geo.parameters(), 'lr':0.004}], **opt_kwargs
+            )
+            if optim_state_dict != None :
+                optim_dict = opt.state_dict()
+                pretrained_dict = {k: v for k , v in optim_dict.items() if k in optim_dict}
+                optim_dict.update(pretrained_dict)
+                opt.load_state_dict(optim_dict)
+                
+                print("DEBUG : load optim state")
             phases += [dnnlib.EasyDict(name=name + 'main', module=module, opt=opt, interval=1)]
-            phases += [dnnlib.EasyDict(name=name + 'reg', module=module, opt=opt, interval=reg_interval)]
+    # ------------------------------------------------------------------------- #
+    else:
+        for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval),
+                                                       ('D', D, D_opt_kwargs, D_reg_interval)]:
+            if reg_interval is None:
+                opt = dnnlib.util.construct_class_by_name(
+                    params=module.parameters(), **opt_kwargs)  # subclass of torch.optim.Optimizer
+                phases += [dnnlib.EasyDict(name=name + 'both', module=module, opt=opt, interval=1)]
+            else:  # Lazy regularization.
+                mb_ratio = reg_interval / (reg_interval + 1)
+                opt_kwargs = dnnlib.EasyDict(opt_kwargs)
+                opt_kwargs.lr = opt_kwargs.lr * mb_ratio
+                opt_kwargs.betas = [beta ** mb_ratio for beta in opt_kwargs.betas]
+                opt = dnnlib.util.construct_class_by_name(
+                    module.parameters(),
+                    **opt_kwargs)  # subclass of torch.optim.Optimizer
+                phases += [dnnlib.EasyDict(name=name + 'main', module=module, opt=opt, interval=1)]
+                phases += [dnnlib.EasyDict(name=name + 'reg', module=module, opt=opt, interval=reg_interval)]
 
     for phase in phases:
         phase.start_event = None
@@ -219,17 +299,32 @@ def training_loop(
 
     if rank == 0:
         print('Exporting sample images...')
-        grid_size, images, labels, masks = setup_snapshot_image_grid(training_set=training_set, inference=inference_vis)
+        captions = None
+        if taps3d:
+            grid_size, images, _, masks, labels, captions = setup_snapshot_image_grid(training_set=training_set, inference=inference_vis)
+        else:
+            grid_size, images, labels, masks = setup_snapshot_image_grid(training_set=training_set, inference=inference_vis)
         masks = np.stack(masks)
         images = np.concatenate((images, masks[:, np.newaxis, :, :].repeat(3, axis=1) * 255.0), axis=-1)
         if not inference_vis:
             save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
+            if captions != None:
+                with open(os.path.join(run_dir, 'reals_caption.txt'), 'w') as f:
+                    for caption in captions:
+                        f.write(caption)
+                f.close()
+            
         torch.manual_seed(1234)
         grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(1)  # This one is the latent code for shape generation
-        grid_c = torch.ones(images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
+        # print(grid_z.shape)
+        if taps3d:
+            grid_c = torch.tensor(labels, device=device).split(1)
+        else:
+            grid_c = torch.ones(images.shape[0], device=device).split(1)  # This one is not used, just for the compatiable with the code structure.
 
     if rank == 0:
         print('Initializing logs...')
+
     stats_collector = training_stats.Collector(regex='.*')
     stats_metrics = dict()
     stats_jsonl = None
@@ -261,7 +356,10 @@ def training_loop(
     while True:
         # Fetch training data.
         with torch.autograd.profiler.record_function('data_fetch'):
-            phase_real_img, phase_real_c, real_mask = next(training_set_iterator)
+            if taps3d:
+                phase_real_img, phase_real_c, real_mask, real_caption_feature = next(training_set_iterator)
+            else:
+                phase_real_img, phase_real_c, real_mask = next(training_set_iterator)
             phase_real_img = (phase_real_img.to(device).to(torch.float32) / 127.5 - 1)
             real_mask = real_mask.to(device).to(torch.float32).unsqueeze(dim=1)
             real_mask = (real_mask > 0).float()
@@ -270,10 +368,15 @@ def training_loop(
             phase_real_c = phase_real_c.to(device).split(batch_gpu)
             all_gen_z = torch.randn([len(phases) * (batch_size // num_gpus), G.z_dim], device=device)
             all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split((batch_size // num_gpus))]
-            all_gen_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in
-                         range(len(phases) * (batch_size // num_gpus))]
-            all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
+            if taps3d:
+                all_gen_c = real_caption_feature.to(device)
+            else:
+                all_gen_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in
+                            range(len(phases) * (batch_size // num_gpus))]
+                all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)
+
             all_gen_c = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size // num_gpus)]
+            
         optim_step += 1
         # Execute training phases.
         for phase, phase_gen_z, phase_gen_c in zip(phases, all_gen_z, all_gen_c):
@@ -284,11 +387,26 @@ def training_loop(
             # Accumulate gradients.
             phase.opt.zero_grad(set_to_none=False)
             phase.module.requires_grad_(True)
+            if taps3d:
+                for name, param in phase.module.named_parameters():
+                    param.requires_grad_('mapping' not in name)
+            # For debugging : check whether only mapping network's layer is frozen    
+            # for name, param in phase.module.named_parameters():
+            #     print(name, param.requires_grad)
+
             for real_img, real_c, gen_z, gen_c in zip(phase_real_img, phase_real_c, phase_gen_z, phase_gen_c):
-                loss.accumulate_gradients(
+                returned_loss = loss.accumulate_gradients(
                     phase=phase.name, real_img=real_img, real_c=real_c, gen_z=gen_z, gen_c=gen_c,
                     gain=phase.interval, cur_nimg=cur_nimg)
+                
+                if returned_loss != None:
+                    loss_copy = returned_loss.detach().clone()
+                    if num_gpus > 1:
+                        torch.distributed.reduce(loss_copy, dst=0)
+            if taps3d and rank == 0:
+                print(f"LOSS : {loss_copy.item()/num_gpus: 5f}")
             phase.module.requires_grad_(False)
+            #--------------------------------------------#
 
             # Update weights.
             with torch.autograd.profiler.record_function(phase.name + '_opt'):
@@ -324,7 +442,6 @@ def training_loop(
                 p_ema.copy_(p.lerp(p_ema, ema_beta))
             for b_ema, b in zip(G_ema.buffers(), G.buffers()):
                 b_ema.copy_(b)
-
         # Update state.
         cur_nimg += batch_size
         batch_idx += 1
@@ -366,19 +483,23 @@ def training_loop(
                 not detect_anomaly):
             with torch.no_grad():
                 print('==> start visualization')
+                print((cur_tick % (image_snapshot_ticks * 4) == 0) and training_set.resolution < 512)
                 save_visualization(
                     G_ema, grid_z, grid_c, run_dir, cur_nimg, grid_size, cur_tick,
                     image_snapshot_ticks,
                     save_all=(cur_tick % (image_snapshot_ticks * 4) == 0) and training_set.resolution < 512,
                 )
+                
                 print('==> saved visualization')
 
-            # Save network snapshot.
+        # Save network snapshot.
         snapshot_pkl = None
         snapshot_data = None
         if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0) and not detect_anomaly:  # and (cur_tick != 0 or resume_pretrain is not None):  ###########
-            snapshot_data = dict(
-                G=G, D=D, G_ema=G_ema)
+            if taps3d:
+                snapshot_data = dict(G=G, G_ema=G_ema)
+            else:
+                snapshot_data = dict(G=G, G_ema=G_ema, D=D)
             for key, value in snapshot_data.items():
                 if isinstance(value, torch.nn.Module) and not isinstance(value, dr.ops.RasterizeGLContext):
                     if num_gpus > 1:
@@ -388,11 +509,17 @@ def training_loop(
                     snapshot_data[key] = value
             snapshot_pkl = os.path.join(run_dir, f'network-snapshot-{cur_nimg // 1000:06d}.pkl')
             if rank == 0:
-                all_model_dict = {'G': snapshot_data['G'].state_dict(), 'G_ema': snapshot_data['G_ema'].state_dict(),
-                                  'D': snapshot_data['D'].state_dict()}
+                if taps3d:
+                    all_model_dict = {'G': snapshot_data['G'].state_dict(), 'G_ema': snapshot_data['G_ema'].state_dict(), 
+                                      'Optim': phase.opt.state_dict}
+                else:
+                    all_model_dict = {'G': snapshot_data['G'].state_dict(), 'G_ema': snapshot_data['G_ema'].state_dict(),
+                                    'D': snapshot_data['D'].state_dict()}
                 torch.save(all_model_dict, snapshot_pkl.replace('.pkl', '.pt'))
 
         # Evaluate metrics.
+        if taps3d:      # Not implemented
+            continue
         if (snapshot_data is not None) and (len(metrics) > 0):
             if rank == 0:
                 print('Evaluating metrics...')

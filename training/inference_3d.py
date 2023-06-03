@@ -18,7 +18,11 @@ from torch_utils.ops import grid_sample_gradfix
 from metrics import metric_main
 from training.inference_utils import save_visualization, save_visualization_for_interpolation, \
     save_textured_mesh_for_inference, save_geo_for_inference
-
+##for inference
+# from training.inference_utils import test_time_textured_mesh_for_inferencetime_measure
+from training.inference_utils import save_render_n_textured_mesh_for_inference
+from training.inference_utils import save_render_from_text
+from training.geometry_predictor import FullyConnectedLayer
 
 def clean_training_set_kwargs_for_metrics(training_set_kwargs):
     if 'add_camera_cond' in training_set_kwargs:
@@ -38,10 +42,13 @@ def inference(
         rank=0,  # Rank of the current process in [0, num_gpus[.
         inference_vis=False,
         inference_to_generate_textured_mesh=False,
+        inference_custom=False,
         resume_pretrain=None,
         inference_save_interpolation=False,
         inference_compute_fid=False,
         inference_generate_geo=False,
+        inference_custom_taps3d=False,
+        text='',
         **dummy_kawargs
 ):
     from torch_utils.ops import upfirdn2d
@@ -63,7 +70,7 @@ def inference(
 
 
     common_kwargs = dict(
-        c_dim=0, img_resolution=training_set_kwargs['resolution'] if 'resolution' in training_set_kwargs else 1024, img_channels=3)
+        c_dim=512, img_resolution=training_set_kwargs['resolution'] if 'resolution' in training_set_kwargs else 1024, img_channels=3)
     G_kwargs['device'] = device
 
     G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(
@@ -71,30 +78,65 @@ def inference(
     # D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(
     #     device)  # subclass of torch.nn.Module
     G_ema = copy.deepcopy(G).eval()  # deepcopy can make sure they are correct.
+
+    # --------- MINSU ------- # 0512
+    if inference_custom_taps3d:
+        G.mapping_geo.fc0= FullyConnectedLayer(in_features=1024, out_features=512, activation='lrelu')
+        G.mapping.fc0= FullyConnectedLayer(in_features=1024 ,out_features=512, activation='lrelu')
+        G_ema.mapping_geo = copy.deepcopy(G.mapping_geo)
+        G_ema.mapping = copy.deepcopy(G.mapping)
+    # ------------------------
+
     if resume_pretrain is not None and (rank == 0):
         print('==> resume from pretrained path %s' % (resume_pretrain))
         model_state_dict = torch.load(resume_pretrain, map_location=device)
         G.load_state_dict(model_state_dict['G'], strict=True)
         G_ema.load_state_dict(model_state_dict['G_ema'], strict=True)
         # D.load_state_dict(model_state_dict['D'], strict=True)
-    grid_size = (5, 5)
+    grid_size = (3, 3)
     n_shape = grid_size[0] * grid_size[1]
     grid_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for geometry
     grid_tex_z = torch.randn([n_shape, G.z_dim], device=device).split(1)  # random code for texture
-    grid_c = torch.ones(n_shape, device=device).split(1)
+    grid_c = torch.ones([n_shape, G.z_dim], device=device).split(1)
 
     print('==> generate ')
-    save_visualization(
-        G_ema, grid_z, grid_c, run_dir, 0, grid_size, 0,
-        save_all=False,
-        grid_tex_z=grid_tex_z
-    )
-
-    if inference_to_generate_textured_mesh:
-        print('==> generate inference 3d shapes with texture')
-        save_textured_mesh_for_inference(
-            G_ema, grid_z, grid_c, run_dir, save_mesh_dir='texture_mesh_for_inference',
-            c_to_compute_w_avg=None, grid_tex_z=grid_tex_z)
+    # save_visualization(
+    #     G_ema, grid_z, grid_c, run_dir, 0, grid_size, 0,
+    #     save_all=False,
+    #     grid_tex_z=grid_tex_z
+    # )
+    
+    ############################### original code #########################
+    # if inference_to_generate_textured_mesh:
+    #     print('==> generate inference 3d shapes with texture')
+    #     save_textured_mesh_for_inference(
+    #         G_ema, grid_z, grid_c, run_dir, save_mesh_dir='texture_mesh_for_inference',
+    #         c_to_compute_w_avg=None, grid_tex_z=grid_tex_z)
+    
+    # #################### for testing inference time - by 정빈 ###########
+    # if inference_to_generate_textured_mesh:
+    #     print('==> generate inference 3d shapes with texture')
+    #     test_time_textured_mesh_for_inferencetime_measure(
+    #         G_ema,device,z_dim = G.z_dim,c_to_compute_w_avg=None)
+    #######################################################################
+    
+    
+    # ------------------------ MINSU ------------------------ #
+    
+    if inference_custom:
+        print('==> generate : custom inference')
+        save_render_n_textured_mesh_for_inference(
+            G_ema, grid_z, grid_c, run_dir, save_mesh_dir='custom',
+            c_to_compute_w_avg=None, grid_tex_z=grid_tex_z
+        )
+    
+    if inference_custom_taps3d:
+        print('==> generate : custom inference TAPS3D')
+        save_render_from_text(
+            G_ema, grid_z, grid_c, run_dir, save_mesh_dir='custom',
+            c_to_compute_w_avg=None, grid_tex_z=grid_tex_z,
+            text=text)
+        
 
     if inference_save_interpolation:
         print('==> generate interpolation results')

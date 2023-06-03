@@ -6,6 +6,9 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION & AFFILIATES is strictly prohibited.
 
+# History:
+#   - 230426 : DONGHA - Add CLIP Dependency
+
 conda create -n get3d python=3.8
 conda activate get3d
 pip install torch==1.9.0+cu111 torchvision==0.10.0+cu111 torchaudio==0.9.0 -f https://download.pytorch.org/whl/torch_stable.html
@@ -18,3 +21,6 @@ pip install click
 pip install tqdm
 pip install opencv-python==4.5.4.58
 
+# DONGHA - CLIP Dependency
+pip install ftfy regex tqdm
+pip install git+https://github.com/openai/CLIP.git

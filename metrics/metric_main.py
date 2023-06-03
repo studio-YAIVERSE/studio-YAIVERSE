@@ -142,7 +142,7 @@ def eqr50k(opts):
 @register_metric
 def fid50k(opts):
     opts.dataset_kwargs.update(max_size=None)
-    fid = frechet_inception_distance.compute_fid(opts, max_real=50000, num_gen=50000)
+    fid = frechet_inception_distance.compute_fid(opts, max_real=20000, num_gen=20000)
     return dict(fid50k=fid)
 
 

@@ -38,7 +38,7 @@ def sample_camera(camera_data_mode, n, device='cuda'):
     # a uniform distribution (see `render_shapenet_data/render_shapenet.py`
     # for details of camera distribution)
     if camera_data_mode == 'shapenet_car' or camera_data_mode == 'shapenet_chair' or camera_data_mode == 'shapenet_motorbike' \
-            or camera_data_mode == 'ts_house':
+            or camera_data_mode == 'ts_house' or camera_data_mode == 'objaverse_fruit' or camera_data_mode == 'objaverse_shoe':
         horizontal_stddev = math.pi  # here means horizontal rotation
         vertical_stddev = (math.pi / 180) * 15
         horizontal_mean = math.pi  ######## [horizon range [0, 2pi]]

@@ -110,21 +110,25 @@ def init_dataset_kwargs(data, opt=None):
     try:
         if opt.use_shapenet_split:
             dataset_kwargs = dnnlib.EasyDict(
-                class_name='training.dataset.ImageFolderDataset',
+                class_name='training.dataset.DebugDataset',
                 path=data, use_labels=True, max_size=None, xflip=False,
                 resolution=opt.img_res,
                 data_camera_mode=opt.data_camera_mode,
                 add_camera_cond=opt.add_camera_cond,
                 camera_path=opt.camera_path,
                 split='test' if opt.inference_vis else 'train',
+                clip_patch=opt.clip_patch,
+                version='TAPS3D' if opt.taps3d else 'GET3D',
             )
         else:
             dataset_kwargs = dnnlib.EasyDict(
-                class_name='training.dataset.ImageFolderDataset',
+                class_name='training.dataset.DebugDataset',
                 path=data, use_labels=True, max_size=None, xflip=False, resolution=opt.img_res,
                 data_camera_mode=opt.data_camera_mode,
                 add_camera_cond=opt.add_camera_cond,
                 camera_path=opt.camera_path,
+                clip_patch=opt.clip_patch,
+                version='TAPS3D' if opt.taps3d else 'GET3D'
             )
         dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs)  # Subclass of training.dataset.Dataset.
         dataset_kwargs.camera_path = opt.camera_path
@@ -158,13 +162,18 @@ def parse_comma_separated_list(s):
 # My custom configs
 ### Configs for inference
 @click.option('--resume_pretrain', help='Resume from given network pickle', metavar='[PATH|URL]', type=str)
+@click.option('--taps3d', help='mode : TAPS3D (True) or GET3D (False)', type=bool, default=False)
 @click.option('--inference_vis', help='whther we run infernce', metavar='BOOL', type=bool, default=False, show_default=True)
 @click.option('--inference_to_generate_textured_mesh', help='inference to generate textured meshes', metavar='BOOL', type=bool, default=False, show_default=False)
 @click.option('--inference_save_interpolation', help='inference to generate interpolation results', metavar='BOOL', type=bool, default=False, show_default=False)
 @click.option('--inference_compute_fid', help='inference to generate interpolation results', metavar='BOOL', type=bool, default=False, show_default=False)
 @click.option('--inference_generate_geo', help='inference to generate geometry points', metavar='BOOL', type=bool, default=False, show_default=False)
+@click.option('--inference_custom', help='save obj & render img & texture map', metavar='BOOL', type=bool,
+default=False, show_default=False)    # add by MINSU
+@click.option('--clip_path_16', help='path for clip-vit-16', type=str, default='./clip-vit-b-16.pt')
+@click.option('--clip_path_32', help='path for clip-vit-32', type=str, default='./clip-vit-b-32.pt')
+@click.option('--clip_patch', help='size of CLIP model patch', type=int, default=16)
 ### Configs for dataset
-
 @click.option('--data', help='Path to the Training data Images', metavar='[DIR]', type=str, default='./tmp')
 @click.option('--camera_path', help='Path to the camera root', metavar='[DIR]', type=str, default='./tmp')
 @click.option('--img_res', help='The resolution of image', metavar='INT', type=click.IntRange(min=1), default=1024)
@@ -236,6 +245,7 @@ def main(**kwargs):
         c.inference_save_interpolation = opts.inference_save_interpolation
         c.inference_compute_fid = opts.inference_compute_fid
         c.inference_generate_geo = opts.inference_generate_geo
+        c.inference_custom = opts.inference_custom    # MINSU
 
     c.training_set_kwargs, dataset_name = init_dataset_kwargs(data=opts.data, opt=opts)
     if opts.cond and not c.training_set_kwargs.use_labels:
@@ -250,6 +260,7 @@ def main(**kwargs):
     c.G_kwargs.n_implicit_layer = opts.n_implicit_layer
     c.G_kwargs.deformation_multiplier = opts.deformation_multiplier
     c.resume_pretrain = opts.resume_pretrain
+    c.taps3d = opts.taps3d
     c.D_reg_interval = opts.d_reg_interval
     c.G_kwargs.use_style_mixing = opts.use_style_mixing
     c.G_kwargs.dmtet_scale = opts.dmtet_scale
@@ -289,7 +300,7 @@ def main(**kwargs):
     c.image_snapshot_ticks = c.network_snapshot_ticks = opts.snap
     c.random_seed = c.training_set_kwargs.random_seed = opts.seed
     c.data_loader_kwargs.num_workers = opts.workers
-    c.network_snapshot_ticks = 200
+    # c.network_snapshot_ticks = 200
     # Sanity checks.
     if c.batch_size % c.num_gpus != 0:
         raise click.ClickException('--batch must be a multiple of --gpus')
@@ -314,7 +325,9 @@ def main(**kwargs):
         c.G_kwargs.conv_clamp = c.D_kwargs.conv_clamp = None
     if opts.nobench:
         c.cudnn_benchmark = False
-
+    if opts.taps3d:
+        c.loss_kwargs.clip_vit16 = opts.clip_path_16
+        c.loss_kwargs.clip_vit32 = opts.clip_path_32
     # Description string.
     desc = f'{opts.cfg:s}-{dataset_name:s}-gpus{c.num_gpus:d}-batch{c.batch_size:d}-gamma{c.loss_kwargs.r1_gamma:g}'
     if opts.desc is not None:

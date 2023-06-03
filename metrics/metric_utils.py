@@ -92,7 +92,12 @@ def iterate_random_labels(opts, batch_size):
         while True:
             yield c
     else:
-        dataset = dnnlib.util.construct_class_by_name(**opts.dataset_kwargs)
+        # ------------ MINSU -----------
+        # opts.dataset_kwargs.class_name = 'training.dataset_TAPS3D.ImageFolderDataset'  # temporally changed
+        # opts_copy = copy.deepcopy(opts.dataset_kwargs)
+        # opts_copy.class_name = 'training.dataset_TAPS3D.ImageFolderDataset'
+        dataset = dnnlib.util.construct_class_by_name(**opts)
+        print("def iterate_random_labels - get condition")
         while True:
             c = [dataset.get_label(np.random.randint(len(dataset))) for _i in range(batch_size)]
             c = torch.from_numpy(np.stack(c)).pin_memory().to(opts.device)
@@ -140,6 +145,8 @@ class FeatureStats:
             x64 = x.astype(np.float64)
             self.raw_mean += x64.sum(axis=0)
             self.raw_cov += x64.T @ x64
+        if self.num_items > 0 and (self.num_items // x.shape[0]) % 100 == 0:
+            print(self.num_items)
 
     def append_torch(self, x, num_gpus=1, rank=0):
         assert isinstance(x, torch.Tensor) and x.ndim == 2
@@ -228,10 +235,12 @@ class ProgressMonitor:
 
 # ----------------------------------------------------------------------------
 def compute_feature_stats_for_dataset(opts, detector_url, detector_kwargs, rel_lo=0, rel_hi=1, batch_size=64, data_loader_kwargs=None, max_items=None, **stats_kwargs):
-    dataset = dnnlib.util.construct_class_by_name(**opts.dataset_kwargs)
+    opts.dataset_kwargs.class_name = 'training.dataset.DebugDataset'
+    opts.dataset_kwargs.split = 'all'
+    # print("opts.dataset_kwargs : ", opts.dataset_kwargs)
+    dataset = dnnlib.util.construct_class_by_name(**opts.dataset_kwargs)    # FIXME
     if data_loader_kwargs is None:
         data_loader_kwargs = dict(pin_memory=True, num_workers=3, prefetch_factor=2)
-
     cache_file = None
     if opts.cache:
         # Choose cache file name.
@@ -250,7 +259,6 @@ def compute_feature_stats_for_dataset(opts, detector_url, detector_kwargs, rel_l
             flag = (float(flag.cpu()) != 0)
         if flag:
             return FeatureStats.load(cache_file)
-    # Initialize.
     print('==> preparing the cache for fid scores')
     num_items = len(dataset)
     print(opts.dataset_kwargs)
@@ -262,15 +270,27 @@ def compute_feature_stats_for_dataset(opts, detector_url, detector_kwargs, rel_l
     random_dataset = np.random.permutation(list(range(len(dataset))))
     item_subset = [random_dataset[(i * opts.num_gpus + opts.rank) % num_items] for i in range((num_items - 1) // opts.num_gpus + 1)]
 
-    for images, _labels, _masks in tqdm(
+    if opts.dataset_kwargs.version == 'TAPS3D':
+        # CLIP preprocess / condiinfo / mask / filename / cpationfeature / original img
+        for images, _labels, _masks, _captions in tqdm(
             torch.utils.data.DataLoader(
                 dataset=dataset, sampler=item_subset,
                 batch_size=batch_size // opts.num_gpus, **data_loader_kwargs)):
-        if images.shape[1] == 1:
-            images = images.repeat([1, 3, 1, 1])
-        features = detector(images.to(opts.device), **detector_kwargs)
-        stats.append_torch(features, num_gpus=opts.num_gpus, rank=opts.rank)
-        progress.update(stats.num_items)
+            if images.shape[1] == 1:
+                images = images.repeat([1, 3, 1, 1])
+            features = detector(images.to(opts.device), **detector_kwargs)
+            stats.append_torch(features, num_gpus=opts.num_gpus, rank=opts.rank)
+            progress.update(stats.num_items)
+    else:
+        for images, _labels, _masks in tqdm(
+                torch.utils.data.DataLoader(
+                    dataset=dataset, sampler=item_subset,
+                    batch_size=batch_size // opts.num_gpus, **data_loader_kwargs)):
+            if images.shape[1] == 1:
+                images = images.repeat([1, 3, 1, 1])
+            features = detector(images.to(opts.device), **detector_kwargs)
+            stats.append_torch(features, num_gpus=opts.num_gpus, rank=opts.rank)
+            progress.update(stats.num_items)
 
     # Save to cache.
     if cache_file is not None and opts.rank == 0:

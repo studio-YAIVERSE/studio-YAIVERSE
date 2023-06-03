@@ -30,6 +30,7 @@ def xfm_points(points, matrix, use_python=True):
         Transformed points in homogeneous 4D with shape [minibatch_size, num_vertices, 4].
     '''
     out = torch.matmul(torch.nn.functional.pad(points, pad=(0, 1), mode='constant', value=1.0), torch.transpose(matrix, 1, 2))
+    # pad = change 3D points into 4D(=homogenous) points.
     if torch.is_anomaly_enabled():
         assert torch.all(torch.isfinite(out)), "Output of xfm_points contains inf or NaN"
     return out
@@ -67,6 +68,12 @@ class NeuralRender(Renderer):
         num_layers = 1
         mask_pyramid = None
         assert mesh_t_pos_idx_fx3.shape[0] > 0  # Make sure we have shapes
+        
+        # print("DEBUG : neural_render.py : mesh_v_pos_bxnx3 : ", mesh_v_pos_bxnx3.shape)
+        # print("DEBUG : neural_render.py : mesh_t_pos_idx_fx3 : ", mesh_t_pos_idx_fx3.shape)
+        # print("DEBUG : neural_render.py : mesh_v_feat_bxnxd : " , mesh_v_feat_bxnxd.shape)
+        # print("DEBUG : neural_render.py : v_pos : ", v_pos.shape)
+
         mesh_v_feat_bxnxd = torch.cat([mesh_v_feat_bxnxd, v_pos], dim=-1)  # Concatenate the pos  compute the supervision
 
         with dr.DepthPeeler(self.ctx, v_pos_clip, mesh_t_pos_idx_fx3, [resolution * spp, resolution * spp]) as peeler:
