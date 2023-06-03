@@ -215,9 +215,58 @@ We provide some yaml files as [examples](./experiments).
 
 <br>
 
-### Our checkpoint
+---
 
-- We provide our checkpoint for some text templates, in backend repository. See [checkpoint release](https://github.com/studio-YAIVERSE/Backend/releases/tag/1.0.0).
+## Inference
+
+### Changing GET3D Checkpoint
+
+* You may have to change GET3D model's checkpoint to apprpriate one, by `clip_loss` value of given prompt text or image.
+* Function `match_checkpoint`, in [`legacy/backend_input_checkpoint_map.py`](./legacy/backend_input_checkpoint_map.py), returns best combination of source and target text. You can parse best checkpoint from it, like given example code:
+   ```python
+   ...
+   get3d_generator: GeneratorDMTETMesh
+   
+   from legacy.backend_input_checkpoint_map import match_checkpoint, parse_checkpoint_path
+   src, trg = match_checkpoint(
+       input_text,
+       input_image_path,
+       embedding_group_pt_path,
+       device
+   )
+   checkpoint_path = parse_checkpoint_path(src, trg, args.checkpoint_root))
+   get3d_generator.load_state_dict(torch.load(checkpoint_path))
+   ...
+   # Your inference code with GET3D...
+   ```
+* `embedding_group_pt_path` is the path of "embedding_group_pt", which could be built from  [`legacy/generate_embedding_group_pt.py`](./legacy/generate_embedding_group_pt.py) script.
+
+<br>
+
+### (Note) Full inference instruction of backend
+
+* You can see end-to-end inference code - from text or image to 3d binary files - in backend's `studio_YAIVERSE.apps.main.pytorch` package. See [here](https://github.com/studio-YAIVERSE/Backend/blob/master/studio_YAIVERSE/apps/main/pytorch/__init__.py).
+* Since `pytorch` package is implemented with related import method, you can copy `pytorch` folder and just harness it, like given example:
+   ```python
+   from pytorch import init, inference
+   
+   YOUR_CONFIG: dict  # Write your config refer to init.__doc__
+   init(YOUR_CONFIG)
+   
+   result = inference("object_name", "your_text_prompt")
+   
+   with open("result.glb", "wb") as fp:
+       fp.write(result.file.getvalue())  # result.file: BytesIO
+   
+   with open("thumbnail.png", "wb") as fp:
+       fp.write(result.thumbnail.getvalue())  # result.thumbnail: BytesIO
+   ```
+
+<br>
+
+### Our checkpoint for inference
+
+* We provide our checkpoint for some text templates, in backend repository. See [checkpoint release](https://github.com/studio-YAIVERSE/Backend/releases/tag/1.0.0).
 
 <br>
 
@@ -254,7 +303,5 @@ We provide some yaml files as [examples](./experiments).
 ## Note
 
 * Please note that this is not official code by GET3D authors. There may be differences in detail from the original.
-
 * [`TAPS3D`](https://github.com/studio-YAIVERSE/studio-YAIVERSE/tree/TAPS3D) branch contains our incomplete trial of GET3D training code + TAPS3D training code.
-
 * If you have any question for our team project, don't hesitate to leave an issue or email to [minsu1206@yonsei.ac.kr](mailto:minsu1206@yonsei.ac.kr). Thanks.
